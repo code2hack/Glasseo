@@ -22,7 +22,7 @@ The four project articles have exclusive editors:
 - `MILESTONES.md` — owned and editable **only by the ChatGPT CTO**.
 - `DEV.md` — owned and editable **only by the Codex Manager**.
 
-No change to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md` is permitted unless the Project Owner has **explicitly instructed the change or explicitly approved it**. A role assignment, issue scope, CTO plan, Manager schedule, Worker report, PR, review result, or prior custom does not by itself authorize an article edit. A prior Owner instruction may authorize a class of changes only when that standing authority is explicit and clearly covers the proposed edit.
+No change to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md` is permitted unless the Project Owner has **explicitly instructed the change or explicitly approved it**. A role assignment, issue scope, CTO plan, Worker report, PR, review result, or prior custom does not by itself authorize an article edit. A prior Owner instruction may authorize a class of changes only when that standing authority is explicit and clearly covers the proposed edit.
 
 After Owner approval or instruction exists, the corresponding exclusive owner performs the repository edit. No other role may edit, commit, amend, replace, regenerate, or resolve merge conflicts in that owner's article.
 
@@ -53,7 +53,6 @@ The Project Owner is the final human authority. The Project Owner:
 - creates the Manager's local tmux session;
 - gives the Manager the exact URL of the ChatGPT CTO conversation;
 - chooses the hosts, tmux locations, Codex profiles, and maximum Worker concurrency;
-- approves the Manager's execution schedule;
 - handles human gates and ALARM events;
 - provides or approves the alarm mechanism recorded in `DEV.md`.
 
@@ -69,7 +68,7 @@ The CTO is one ChatGPT conversation named **CTO**. The CTO:
 - maintains `MILESTONES.md` as the canonical milestone/DAG article when Owner-approved changes are required;
 - writes a detailed implementation plan on each issue before a Worker is dispatched;
 - reviews each implementation pull request;
-- records either `PASS` or `CHANGES REQUESTED` on the pull request or linked issue;
+- records either `PASS` or `CHANGES_REQUESTED` on the pull request or linked issue;
 - writes the next correction plan when review does not pass.
 
 The CTO is the default design and implementation reviewer for this workflow.
@@ -88,7 +87,7 @@ The Manager is one local Codex thread running in a tmux session created by the P
 - inspects open `ready-for-agent` issues and their dependency DAG;
 - asks the CTO to inspect and plan each current concurrent-ready ticket set as one batch before Worker dispatch;
 - waits until every ticket in that batch is marked by the CTO as `PLANNED`, `BLOCKED`, or `REMOVED_FROM_BATCH`;
-- creates Workers sequentially, one spawn operation at a time, for the planned tickets until the approved concurrency limit is reached;
+- creates Workers sequentially, one spawn operation at a time, for the planned tickets until the Owner-selected concurrency limit is reached;
 - assigns exactly one issue to each Worker;
 - creates the pull request after a Worker commits and pushes its branch;
 - asks the CTO to review the pull request;
@@ -96,7 +95,7 @@ The Manager is one local Codex thread running in a tmux session created by the P
 - merges only after CTO approval and required verification passes;
 - closes the issue and archives the Worker after merge.
 
-Workers may run concurrently, but the Manager starts them one by one and never exceeds the Project Owner's approved concurrency limit.
+Workers may run concurrently, but the Manager starts them one by one and never exceeds the Project Owner's selected concurrency limit.
 
 ### 2.4 Codex Workers
 
@@ -162,7 +161,7 @@ ChatGPT CTO: Review — PASS
 or:
 
 ```text
-ChatGPT CTO: Review — CHANGES REQUESTED
+ChatGPT CTO: Review — CHANGES_REQUESTED
 ```
 
 ## 4. Communication protocol
@@ -219,7 +218,7 @@ A human gate is any step that requires the Project Owner's direct judgment or ph
 
 - changing a frozen product decision or `SPEC.md` behavior;
 - approving or instructing a change to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md` when no prior explicit Owner authority covers the change;
-- approving the Manager's schedule, concurrency, host, tmux, or Worker profile plan;
+- changing the Owner-selected host, tmux layout, Worker profile, or maximum Worker concurrency;
 - device unlock, pairing, cable movement, permission dialog, QR scan, or other physical-device action;
 - login, credential, account, or secret handling that automation cannot safely complete;
 - destructive or security-sensitive actions not already approved by the issue plan;
@@ -274,28 +273,13 @@ Each issue should contain:
 - cleanup and archival procedure;
 - known environment limitations.
 
-### 6.3 Schedule approval
-
-The Manager inspects open `ready-for-agent` issues and the dependency DAG, then proposes to the Project Owner:
-
-- the ready issue set;
-- dependency order;
-- brief plan for each issue;
-- conflict and shared-file risks;
-- maximum concurrent Workers;
-- Worker host and tmux placement;
-- Worker Codex profile;
-- expected human gates.
-
-Dispatch begins only after Project Owner approval.
-
 ## 7. Concurrent-ticket planning and Worker dispatch
 
 Planning is batched. Worker spawning is sequential. Worker execution may be concurrent. Review and merge remain per issue.
 
 ### 7.1 Build the concurrent-ready batch
 
-After schedule approval, the Manager identifies the current concurrent-ready ticket set from the issue DAG and current remote-repository evidence. The proposed batch contains only issues whose dependencies are satisfied and whose scopes can run concurrently without an unresolved ownership conflict.
+The Manager identifies the current concurrent-ready ticket set from the issue DAG, `ready-for-agent` labels, and current remote-repository evidence. The proposed batch contains only issues whose dependencies are satisfied and whose scopes can run concurrently without an unresolved ownership conflict.
 
 The Manager sends the CTO one batch request through `$ask-chatgpt`. The request includes:
 
@@ -334,7 +318,7 @@ The Manager waits until every ticket in the proposed batch has one of these outc
 
 ### 7.3 Sequential spawn, concurrent execution
 
-The Manager checks the completed plans against the Project Owner's approved concurrency limit, available hosts, Worker profiles, and active-work conflicts.
+The Manager checks the completed plans against the Project Owner-selected concurrency limit, available hosts, Worker profiles, and active-work conflicts.
 
 For each `PLANNED` ticket selected for dispatch, the Manager performs these steps one at a time:
 
@@ -346,7 +330,7 @@ For each `PLANNED` ticket selected for dispatch, the Manager performs these step
 6. Record the Worker identity and work state on the issue.
 7. Only then proceed to spawn the next planned Worker.
 
-Previously started Workers continue running while later Workers are spawned. The Manager never exceeds the approved concurrency limit.
+Previously started Workers continue running while later Workers are spawned. The Manager never exceeds the Owner-selected concurrency limit.
 
 When all tickets in the batch have been dispatched or excluded with a documented reason, the Manager ends the dispatch turn and waits for Worker reports.
 
