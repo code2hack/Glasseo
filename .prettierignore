@@ -1,0 +1,6 @@
+app/build/
+build/
+node_modules/
+gradlew
+gradlew.bat
+*.properties

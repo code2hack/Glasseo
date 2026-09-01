@@ -1,0 +1,31 @@
+{
+  "name": "glasseo",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": "22.23.1",
+    "npm": "10.9.8"
+  },
+  "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test web/test/*.test.ts",
+    "lint": "eslint web scripts",
+    "format:check": "prettier --check package.json tsconfig.json eslint.config.mjs scripts web .github"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.7.0",
+    "@getpaseo/protocol": "0.7.0",
+    "@getpaseo/relay": "0.7.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.18.0",
+    "eslint": "10.9.1",
+    "esbuild": "0.28.2",
+    "prettier": "3.6.2",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.69.0"
+  }
+}
