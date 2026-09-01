@@ -86,8 +86,6 @@ The Manager is one local Codex thread running in a tmux session created by the P
 - edits `DEV.md` only after the Project Owner has explicitly instructed or approved the change;
 - never edits `SPEC.md`, `AGENTS.md`, or `MILESTONES.md`; requested changes to those articles are escalated to the CTO after Owner approval/instruction is established;
 - inspects open `ready-for-agent` issues and their dependency DAG;
-- proposes an execution schedule covering issue order, brief implementation approach, conflict risk, hosts, tmux locations, Worker profiles, and maximum concurrency;
-- waits for Project Owner approval before dispatching implementation work;
 - asks the CTO to inspect and plan each current concurrent-ready ticket set as one batch before Worker dispatch;
 - waits until every ticket in that batch is marked by the CTO as `PLANNED`, `BLOCKED`, or `REMOVED_FROM_BATCH`;
 - creates Workers sequentially, one spawn operation at a time, for the planned tickets until the approved concurrency limit is reached;
@@ -383,7 +381,7 @@ After a Worker reports completion:
 4. The Manager posts a role-attributed summary and asks the CTO to review.
 5. The CTO reviews the diff, tests, evidence, specification alignment, issue acceptance criteria, and confirms the implementation PR contains no project-article changes.
 
-When review returns `CHANGES REQUESTED`:
+When review returns `CHANGES_REQUESTED`:
 
 1. The CTO writes a concrete correction plan on the issue or pull request.
 2. The CTO informs the Manager through `$ask-chatgpt`.
