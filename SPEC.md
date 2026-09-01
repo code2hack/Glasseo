@@ -8,6 +8,28 @@ Glasseo is intentionally focused: projects, workspaces, and agents are created a
 
 Target integration: current Paseo 0.7.x protocol and Paseo Relay. Glasseo follows Paseo's existing client/server and security behavior.
 
+### 1.1 Canonical Rokid physical controls
+
+Glasseo has exactly seven semantic controls. On Rokid glasses, these controls are permanently bound to the following physical operations and are not user-remappable:
+
+| Glasseo control | Permanent Rokid physical operation | Rokid/Android event evidence |
+|---|---|---|
+| `PRIMARY` | one-finger tap/touch on the touchpad | current Rokid Glass3 developer docs: `KEYCODE_ENTER` (`66`) for side-touchpad single tap |
+| `SECONDARY` | two-finger tap/touch on the touchpad | semantic binding is fixed; current public Rokid docs do not publish a distinct app-level keycode for this gesture, so the exact target-firmware event signature must be qualified on-device |
+| `COMMAND` | physical/function button | Rokid button channel; use button down/up (`com.android.action.ACTION_SPRITE_BUTTON_DOWN` / `com.android.action.ACTION_SPRITE_BUTTON_UP`) for Glasseo press-duration classification; Rokid also exposes click-level broadcasts such as `com.rokid.glass3.action.button.CLICK` |
+| `UP` | one-finger swipe touchpad backward | current Rokid Glass3 developer docs: `KEYCODE_DPAD_LEFT` (`21`) for backward swipe |
+| `DOWN` | one-finger swipe touchpad forward | current Rokid Glass3 developer docs: `KEYCODE_DPAD_RIGHT` (`22`) for forward swipe |
+| `LEFT` | two-finger swipe touchpad backward | semantic binding is fixed; current public Rokid docs do not publish the directional two-finger app-level keycode, so the exact target-firmware event signature must be qualified on-device |
+| `RIGHT` | two-finger swipe touchpad forward | semantic binding is fixed; current public Rokid docs do not publish the directional two-finger app-level keycode, so the exact target-firmware event signature must be qualified on-device |
+
+The semantic direction is defined by the physical gesture above, not by the name of the Android keycode used by Rokid firmware. For example, Rokid's documented one-finger backward swipe produces `DPAD_LEFT`, but Glasseo treats that gesture as `UP`.
+
+Rokid firmware may emit helper or companion key events around one physical gesture. The native input adapter must normalize one complete physical operation into exactly one Glasseo control interaction and suppress duplicate companion events. Older Rokid documentation, for example, describes fast one-finger swipes that may include an additional `DPAD_UP` or `DPAD_DOWN` event after the horizontal DPAD sequence.
+
+Issue #3 must qualify the exact raw/app-level signatures of all seven permanent bindings on the target RG firmware before its input mapping is accepted. In particular, the two-finger tap and two-finger swipe signatures must be proven on-device because Rokid's current public developer documentation does not specify them. If a permanent gesture is not distinguishable through ordinary foreground Android events, implementation may use an officially supported Rokid event/interception channel available to the target device, but it must not silently substitute a different physical gesture or change the seven semantic bindings.
+
+Optional Bluetooth HID bindings are additional physical aliases for these same seven controls. They never replace, disable, or remap the permanent Rokid bindings.
+
 ## 2. Paseo model
 
 Glasseo uses Paseo's own hierarchy and terminology:
@@ -324,7 +346,7 @@ Removing a host removes its local connection profile and immediately cleans all 
 
 ### 10.3 HID Keys
 
-HID Keys binds Bluetooth HID key events to Glasseo's seven semantic controls:
+HID Keys binds optional Bluetooth HID key events as additional aliases for Glasseo's seven semantic controls:
 
 ```text
 PRIMARY
@@ -336,9 +358,9 @@ UP
 DOWN
 ```
 
-Single `PRIMARY` on a semantic-control row starts capture; the next eligible HID key event becomes its binding. One physical key maps to one Glasseo control and duplicate bindings are rejected. A reset action clears optional HID bindings.
+Single `PRIMARY` on a semantic-control row starts capture; the next eligible HID key event becomes its optional HID binding. One physical HID key maps to one Glasseo control and duplicate HID bindings are rejected. A reset action clears only optional HID bindings.
 
-Built-in Rokid controls and Bluetooth HID bindings are active together. Physical events are first mapped to the seven semantic controls; short/long/double classification happens after mapping.
+The permanent Rokid physical mappings in Section 1.1 always remain active and cannot be changed from Config. Bluetooth HID never replaces or disables a Rokid mapping. Physical events from either source are first mapped to the seven semantic controls; short/long/double classification happens after mapping.
 
 ## 11. Local state and recovery
 
@@ -391,4 +413,4 @@ The initial Glasseo client needs only the Paseo surfaces required by this specif
 - Paseo dictation streaming;
 - provider usage metadata when available.
 
-Hardware-facing behavior is owned by the Android app: Rokid input, Bluetooth HID input, press-duration classification, head posture, Camera2, microphone capture, and HUD lifecycle.
+Hardware-facing behavior is owned by the Android app: permanent Rokid control mapping, optional Bluetooth HID aliases, press-duration classification, head posture, Camera2, microphone capture, and HUD lifecycle.
