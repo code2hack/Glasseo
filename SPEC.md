@@ -175,7 +175,7 @@ Glasseo follows Paseo's timeline model:
 | `DOWN` | scroll downward; hold for continuous scrolling |
 | single `PRIMARY` | toggle following live output |
 | long `PRIMARY` | jump to latest content and follow |
-| single `SECONDARY` | no action |
+| long `SECONDARY` | no action |
 | double `SECONDARY` | hide HUD |
 | single `COMMAND` | open Draft |
 | long `COMMAND` | open Config |
@@ -227,8 +227,8 @@ Text is tokenized into words and punctuation units.
 - single `PRIMARY` — start selection at the current unit. The thin cursor becomes a shallow filled selection block.
 - while selecting, `UP` / `DOWN` expand or contract selection.
 - single `PRIMARY` while selecting — copy selection and leave selection.
-- single `SECONDARY` while selecting — cut selection and leave selection.
-- single `SECONDARY` without selection — delete the current unit using `dw`-like semantics.
+- long `SECONDARY` while selecting — cut selection and leave selection.
+- long `SECONDARY` without selection — delete the current unit using `dw`-like semantics.
 
 Voice and Morse can be entered only while Text is the active Draft area.
 
@@ -237,7 +237,7 @@ Voice and Morse can be entered only while Text is the active Draft area.
 - `UP` / `DOWN` — move among attached images.
 - single `PRIMARY` — select/cancel the current image.
 - selected images are highlighted.
-- if one or more images are selected, single `SECONDARY` deletes them immediately.
+- if one or more images are selected, long `SECONDARY` deletes them immediately.
 - leaving the Images area clears image selection.
 
 The Images area does not exist while the Draft contains no images. Photo remains available from the action wheel; the first captured image creates the Images area.
@@ -300,12 +300,12 @@ On Send/Steer, Glasseo submits Draft text plus encoded images using Paseo's exis
 
 Voice can be entered only when Text is active.
 
-Glasseo uses Paseo's existing dictation stream protocol. The provisional transcript is displayed immediately before the original cursor position and surrounded by an expanded thin cursor box, representing one uncommitted unit.
+Glasseo uses Paseo's existing dictation stream protocol. The provisional transcript is displayed immediately before the original Text cursor position and surrounded by an expanded thin cursor box, representing one uncommitted unit.
 
 | Control | Action |
 |---|---|
 | single `PRIMARY` | finish current dictation; commit final transcript into local Draft; begin a new provisional slice |
-| single `SECONDARY` | discard current provisional transcript and begin a new slice |
+| long `SECONDARY` | discard current provisional transcript and begin a new slice |
 | single `COMMAND` | exit to Draft Edit and discard the current provisional transcript |
 
 Committed transcript text becomes ordinary Draft text. Provisional transcript text is not part of the persisted Draft.
@@ -331,7 +331,7 @@ Initial target: `T = 200 ms`; the value may be tuned from real-device testing wi
 
 - short `PRIMARY` — dot.
 - long `PRIMARY` — dash.
-- single `SECONDARY`:
+- long `SECONDARY`:
   1. clear the current dot/dash buffer when non-empty;
   2. otherwise delete the latest uncommitted letter when the letter buffer is non-empty;
   3. otherwise perform normal `dw` deletion on the current Text unit.
