@@ -1,7 +1,8 @@
-import { copyFile, mkdir } from "node:fs/promises";
+import { copyFile, mkdir, rm } from "node:fs/promises";
 import { build } from "esbuild";
 
 const outdir = "app/build/generated/web";
+await rm(outdir, { force: true, recursive: true });
 await mkdir(outdir, { recursive: true });
 await build({
   entryPoints: ["web/src/main.ts", "web/src/styles.css"],

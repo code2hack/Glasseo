@@ -24,9 +24,12 @@ class WebViewQualificationTest {
             }
             val result = ProbeState.await(60)
             assertNotNull("WebView probe did not report", result)
-            assertTrue("Failed checks: ${result?.details}", result?.passed == true)
+            assertEquals(BridgeMessage.REQUIRED_CHECKS, result?.checks?.keys)
+            assertEquals(BridgeMessage.REQUIRED_CHECKS, result?.details?.keys)
+            assertTrue("Failed checks: ${result?.details}", result?.isPassing() == true)
             assertEquals(1, ProbeState.helloCount)
             assertTrue("Remote main-frame navigation was not rejected", ProbeState.blockedNavigations >= 1)
+            assertEquals("WebView renderer was lost", 0, ProbeState.rendererGone)
         }
     }
 }

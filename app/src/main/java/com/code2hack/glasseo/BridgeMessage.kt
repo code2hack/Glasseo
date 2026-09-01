@@ -9,9 +9,24 @@ sealed interface BridgeMessage {
         val passed: Boolean,
         val checks: Map<String, Boolean>,
         val details: Map<String, String>,
-    ) : BridgeMessage
+    ) : BridgeMessage {
+        fun isPassing(): Boolean =
+            passed && checks.keys == REQUIRED_CHECKS && details.keys == REQUIRED_CHECKS && checks.values.all { it }
+    }
 
     companion object {
+        val REQUIRED_CHECKS: Set<String> = linkedSetOf(
+            "localHttpsOrigin",
+            "textCodec",
+            "promiseScheduling",
+            "structuredStorageReopen",
+            "secureRandom",
+            "paseoRelayCrypto",
+            "binaryWss",
+            "untrustedBridgeRejected",
+            "remoteNavigationRejected",
+        )
+
         fun parse(value: String): BridgeMessage {
             val json = JSONObject(value)
             return when (json.optString("type")) {
@@ -30,9 +45,19 @@ sealed interface BridgeMessage {
             }
             val checksJson = json.getJSONObject("checks")
             val detailsJson = json.getJSONObject("details")
+            require(json.get("passed") is Boolean) { "Probe passed must be Boolean" }
+            require(checksJson.keys().asSequence().all { checksJson.get(it) is Boolean }) {
+                "Probe checks must be Boolean"
+            }
+            require(detailsJson.keys().asSequence().all { detailsJson.get(it) is String }) {
+                "Probe details must be strings"
+            }
             val checks = checksJson.keys().asSequence().associateWith { checksJson.getBoolean(it) }
             val details = detailsJson.keys().asSequence().associateWith { detailsJson.getString(it) }
-            return ProbeResult(json.getBoolean("passed"), checks, details)
+            val passed = json.getBoolean("passed")
+            require(checks.keys == REQUIRED_CHECKS && details.keys == REQUIRED_CHECKS) { "Unexpected probe checks" }
+            require(passed == checks.values.all { it }) { "Contradictory probe result" }
+            return ProbeResult(passed, checks, details)
         }
     }
 }

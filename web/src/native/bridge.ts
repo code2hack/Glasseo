@@ -5,6 +5,18 @@ export type ProbeResult = {
   details: Record<string, string>;
 };
 
+export const requiredProbeChecks = [
+  "localHttpsOrigin",
+  "textCodec",
+  "promiseScheduling",
+  "structuredStorageReopen",
+  "secureRandom",
+  "paseoRelayCrypto",
+  "binaryWss",
+  "untrustedBridgeRejected",
+  "remoteNavigationRejected",
+] as const;
+
 export type NativeMessage = { type: "hello" } | ProbeResult;
 
 type NativePort = { postMessage(message: string): void };
@@ -26,11 +38,23 @@ export function decodeNativeMessage(value: string): NativeMessage {
     message.type === "probe-result" &&
     typeof message.passed === "boolean" &&
     isBooleanRecord(message.checks) &&
-    isStringRecord(message.details)
+    isStringRecord(message.details) &&
+    hasExactKeys(message.checks) &&
+    hasExactKeys(message.details) &&
+    message.passed === Object.values(message.checks).every(Boolean)
   ) {
     return message as ProbeResult;
   }
   throw new Error("Unknown or malformed native message");
+}
+
+export function isPassingProbeResult(message: ProbeResult): boolean {
+  return (
+    message.passed &&
+    hasExactKeys(message.checks) &&
+    hasExactKeys(message.details) &&
+    Object.values(message.checks).every(Boolean)
+  );
 }
 
 export function postNative(message: NativeMessage): void {
@@ -52,5 +76,13 @@ function isStringRecord(value: unknown): value is Record<string, string> {
     !!value &&
     typeof value === "object" &&
     Object.values(value).every((item) => typeof item === "string")
+  );
+}
+
+function hasExactKeys(value: Record<string, unknown>): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === requiredProbeChecks.length &&
+    requiredProbeChecks.every((key) => keys.includes(key))
   );
 }

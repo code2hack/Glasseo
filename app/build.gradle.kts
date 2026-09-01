@@ -28,7 +28,13 @@ android {
 val buildWeb by tasks.registering(Exec::class) {
     workingDir(rootDir)
     commandLine("npm", "run", "build")
-    inputs.files(fileTree(rootDir.resolve("web")), rootDir.resolve("scripts/build-web.mjs"), rootDir.resolve("package-lock.json"))
+    inputs.files(
+        fileTree(rootDir.resolve("web")),
+        rootDir.resolve("scripts/build-web.mjs"),
+        rootDir.resolve("package.json"),
+        rootDir.resolve("package-lock.json"),
+        rootDir.resolve("tsconfig.json"),
+    )
     outputs.dir(layout.buildDirectory.dir("generated/web"))
 }
 

@@ -17,17 +17,11 @@ export async function runWebViewProbe(): Promise<ProbeSummary> {
     const value = "Glasseo 眼鏡";
     return new TextDecoder().decode(new TextEncoder().encode(value)) === value;
   });
-  await check("promiseScheduling", async () => {
-    const order: number[] = [];
-    order.push(1);
-    const value = await Promise.resolve().then(() => {
-      order.push(2);
-      return 3;
-    });
-    order.push(value);
-    return order.join(",") === "1,2,3";
-  });
-  await check("structuredStorageReopen", probeIndexedDb);
+  await check("promiseScheduling", probePromiseBehavior);
+  await check(
+    "structuredStorageReopen",
+    async () => (await probeIndexedDb()) && (await probeIndexedDb()),
+  );
   await check("secureRandom", () => {
     const a = new Uint8Array(32);
     const b = new Uint8Array(32);
@@ -55,22 +49,61 @@ export async function runWebViewProbe(): Promise<ProbeSummary> {
   }
 }
 
+export async function probePromiseBehavior(): Promise<boolean> {
+  const order: string[] = ["start"];
+  await Promise.resolve().then(() => order.push("fulfilled"));
+  const recovered = await Promise.reject(new Error("expected-rejection"))
+    .then(() => {
+      order.push("wrong-fulfillment");
+      return "wrong";
+    })
+    .catch((error: unknown) => {
+      order.push("caught");
+      return error instanceof Error ? error.message : "wrong-error";
+    })
+    .then((value) => {
+      order.push("continued");
+      return value;
+    });
+  return (
+    order.join(",") === "start,fulfilled,caught,continued" &&
+    recovered === "expected-rejection"
+  );
+}
+
 async function probeIndexedDb(): Promise<boolean> {
   const name = "glasseo-compat-probe";
   const token = `persisted-${Date.now()}`;
-  const first = await openDatabase(name, 1, true);
-  await transact(first, "readwrite", (store) =>
-    store.put({ id: "probe", token }),
-  );
-  first.close();
+  await deleteDatabase(name);
+  let first: IDBDatabase | undefined;
+  let reopened: IDBDatabase | undefined;
+  let fresh: IDBDatabase | undefined;
+  try {
+    first = await openDatabase(name, 1, true);
+    await transact(first, "readwrite", (store) =>
+      store.put({ id: "probe", token }),
+    );
+    first.close();
+    first = undefined;
 
-  const reopened = await openDatabase(name, 1, false);
-  const record = (await transact(reopened, "readonly", (store) =>
-    store.get("probe"),
-  )) as { token?: string } | undefined;
-  reopened.close();
-  indexedDB.deleteDatabase(name);
-  return record?.token === token;
+    reopened = await openDatabase(name, 1, false);
+    const record = (await transact(reopened, "readonly", (store) =>
+      store.get("probe"),
+    )) as { token?: string } | undefined;
+    reopened.close();
+    reopened = undefined;
+    await deleteDatabase(name);
+
+    fresh = await openDatabase(name, 1, false);
+    return (
+      record?.token === token && !fresh.objectStoreNames.contains("records")
+    );
+  } finally {
+    first?.close();
+    reopened?.close();
+    fresh?.close();
+    await deleteDatabase(name);
+  }
 }
 
 function openDatabase(
@@ -96,11 +129,29 @@ function transact(
   requestFactory: (store: IDBObjectStore) => IDBRequest,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const request = requestFactory(
-      database.transaction("records", mode).objectStore("records"),
-    );
-    request.onsuccess = () => resolve(request.result);
+    const transaction = database.transaction("records", mode);
+    const request = requestFactory(transaction.objectStore("records"));
+    let result: unknown;
+    request.onsuccess = () => {
+      result = request.result;
+    };
+    transaction.oncomplete = () => resolve(result);
+    transaction.onerror = () => reject(transaction.error ?? request.error);
+    transaction.onabort = () =>
+      reject(
+        transaction.error ??
+          request.error ??
+          new Error("IndexedDB transaction aborted"),
+      );
+  });
+}
+
+function deleteDatabase(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name);
+    request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error("IndexedDB deletion blocked"));
   });
 }
 

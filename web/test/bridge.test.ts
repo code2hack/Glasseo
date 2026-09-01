@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeNativeMessage } from "../src/native/bridge";
+import {
+  decodeNativeMessage,
+  isPassingProbeResult,
+  requiredProbeChecks,
+} from "../src/native/bridge";
 
 test("bridge accepts its two narrow message types", () => {
   assert.deepEqual(decodeNativeMessage('{"type":"hello"}'), { type: "hello" });
   assert.equal(
-    decodeNativeMessage(
-      '{"type":"probe-result","passed":true,"checks":{"origin":true},"details":{"origin":"PASS"}}',
-    ).type,
+    decodeNativeMessage(JSON.stringify(probeResult())).type,
     "probe-result",
   );
 });
@@ -22,3 +24,38 @@ test("bridge rejects malformed and unknown messages", () => {
     assert.throws(() => decodeNativeMessage(value));
   }
 });
+
+test("probe contract rejects missing unknown and contradictory checks", () => {
+  const missing = probeResult();
+  delete missing.checks.remoteNavigationRejected;
+  const unknown = probeResult();
+  unknown.checks.unknown = true;
+  const contradictory = probeResult();
+  contradictory.passed = false;
+
+  for (const value of [missing, unknown, contradictory]) {
+    assert.throws(() => decodeNativeMessage(JSON.stringify(value)));
+  }
+});
+
+test("a required false check cannot pass acceptance", () => {
+  const failed = probeResult();
+  failed.passed = false;
+  failed.checks.secureRandom = false;
+  const decoded = decodeNativeMessage(JSON.stringify(failed));
+  assert.equal(decoded.type, "probe-result");
+  assert.equal(isPassingProbeResult(decoded), false);
+});
+
+function probeResult() {
+  return {
+    type: "probe-result" as const,
+    passed: true,
+    checks: Object.fromEntries(
+      requiredProbeChecks.map((name) => [name, true]),
+    ) as Record<string, boolean>,
+    details: Object.fromEntries(
+      requiredProbeChecks.map((name) => [name, "PASS"]),
+    ),
+  };
+}

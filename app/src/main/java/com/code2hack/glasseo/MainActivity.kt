@@ -73,7 +73,7 @@ class MainActivity : Activity() {
                 .onSuccess {
                     ProbeState.record(it)
                     val detail = if (it is BridgeMessage.ProbeResult) {
-                        "passed=${it.passed} checks=${it.checks} details=${it.details}"
+                        "passed=${it.passed} checks=${it.checks} details=${it.details} rendererGone=${ProbeState.rendererGone}"
                     } else {
                         it::class.simpleName ?: "message"
                     }
@@ -93,6 +93,7 @@ class MainActivity : Activity() {
             }
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                ProbeState.recordRendererGone()
                 trace("renderer-gone", "crashed=${detail.didCrash()}")
                 root.removeView(view)
                 root.addView(TextView(this@MainActivity).apply {

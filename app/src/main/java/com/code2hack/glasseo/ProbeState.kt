@@ -10,12 +10,15 @@ object ProbeState {
         private set
     @Volatile var blockedNavigations = 0
         private set
+    @Volatile var rendererGone = 0
+        private set
     private var latch = CountDownLatch(1)
 
     @Synchronized fun reset() {
         helloCount = 0
         result = null
         blockedNavigations = 0
+        rendererGone = 0
         latch = CountDownLatch(1)
     }
 
@@ -31,6 +34,10 @@ object ProbeState {
 
     @Synchronized fun recordBlockedNavigation() {
         blockedNavigations++
+    }
+
+    @Synchronized fun recordRendererGone() {
+        rendererGone++
     }
 
     fun await(timeoutSeconds: Long): BridgeMessage.ProbeResult? {
