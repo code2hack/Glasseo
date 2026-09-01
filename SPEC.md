@@ -8,7 +8,28 @@ Glasseo is intentionally focused: projects, workspaces, and agents are created a
 
 Target integration: current Paseo 0.7.x protocol and Paseo Relay. Glasseo follows Paseo's existing client/server and security behavior.
 
-### 1.1 Canonical controls and physical input sources
+### 1.1 Authoritative Rokid Glasses sources
+
+Glasseo targets the consumer Rokid Glasses / RG / `glasses` device family running YodaOS-Sprite. The following URLs are pinned as the primary Rokid sources for device, SDK, user-control, and hardware-integration evidence:
+
+- Rokid Open Platform — canonical developer entry for YodaOS-Sprite, CXR-S, and Rokid Glasses bare-metal development:
+  `https://open.rokid.com/?lang=cn`
+- Official CXR-S glasses-side SDK documentation for standalone applications running on YodaOS-Sprite:
+  `https://custom.rokid.com/prod/rokid_web/57e35cd3ae294d16b1b8fc8dcbb1b7c7/pc/us/3fe1c87b945245bf8b6c50393f4da7b6.html`
+- Official Rokid Maven repository for published Android/CXR SDK artifacts:
+  `https://maven.rokid.com/repository/maven-public/`
+- Official consumer Rokid Glasses FAQ, including current two-finger display-off and volume gestures:
+  `https://global.rokid.com/pages/faq`
+- Official Rokid Glasses Academy index:
+  `https://global.rokid.com/blogs/academy-glasses`
+- Official Rokid Glasses button and touch-control guide:
+  `https://global.rokid.com/blogs/academy-glasses/2-3-button-touch-controls`
+- Official Rokid Glasses AI-assistant guide, including touch and configurable two-finger interaction behavior:
+  `https://global.rokid.com/blogs/academy-glasses/3-4-other-ai-features`
+
+The Open Platform URL is the canonical directory when a deep `custom.rokid.com` document ID changes. Glass3, Sprite Enterprise, Rokid AR-series, or other Rokid product-family documentation is not authoritative for Glasseo's RG input behavior unless equivalence is proven on the target firmware.
+
+### 1.2 Canonical controls and physical input sources
 
 Glasseo has exactly seven semantic controls:
 
@@ -390,7 +411,7 @@ Issue #3 establishes that the target glasses and at least one real Bluetooth HID
 
 Single `PRIMARY` on a semantic-control row starts capture; the next eligible HID key event becomes that control's HID binding. One physical HID key maps to one Glasseo control and duplicate HID bindings are rejected. A reset action clears HID bindings.
 
-Supported built-in Rokid mappings from Section 1.1 remain fixed and cannot be remapped in Config. HID mappings coexist with the built-in safe subset and may provide any semantic controls that are unavailable from the built-in RG input surface. Physical events from either source are first mapped to the seven semantic controls; short/long/double classification happens after mapping.
+Supported built-in Rokid mappings from Section 1.2 remain fixed and cannot be remapped in Config. HID mappings coexist with the built-in safe subset and may provide any semantic controls that are unavailable from the built-in RG input surface. Physical events from either source are first mapped to the seven semantic controls; short/long/double classification happens after mapping.
 
 ## 11. Local state and recovery
 
