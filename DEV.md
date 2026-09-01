@@ -6,10 +6,9 @@ This document is the verified development contract for Glasseo. It is governed b
 `SPEC.md`, `AGENTS.md`, GitHub issue #1, and the CTO architecture decision recorded on
 issue #1 on 2026-09-01.
 
-As of 2026-09-02, issue #1 is closed with CTO `PASS`, the one-time post-`DEV.md`
-reconciliation is complete, and issue #2 is the only `ready-for-agent` implementation
-ticket. Issue #2 must create the Android/TypeScript scaffold and make every deferred
-command in this document executable. Issues #3–#22 remain dependency-blocked.
+As of 2026-09-02, issue #1 is closed with CTO `PASS` and issue #2 has established the
+Android/TypeScript scaffold described here. Issues #3–#22 remain outside this scaffold;
+their product and hardware behavior is not implied by the #2 compatibility probe.
 
 ## 2. Repository, host, and approved resources
 
@@ -67,7 +66,7 @@ behind adapters and emit normalized semantic events.
 
 ### 4.1 Android
 
-Issue #2 must scaffold with these exact baseline pins:
+The scaffold uses these exact baseline pins:
 
 | Component | Pin | Current host state |
 |---|---:|---|
@@ -75,10 +74,10 @@ Issue #2 must scaffold with these exact baseline pins:
 | `minSdk` | 32 | target device is API 32 |
 | `compileSdk` | 36 | installed |
 | `targetSdk` | 35 | deliberate first-release compatibility target |
-| Android Gradle Plugin | `9.0.1` | deferred to wrapper/scaffold in #2 |
-| Gradle wrapper | `9.1.0` | deferred to #2; no system Gradle required |
+| Android Gradle Plugin | `9.0.1` | verified by scaffold builds |
+| Gradle wrapper | `9.1.0` | committed with distribution checksum; no system Gradle required |
 | Android Build Tools | `36.0.0` | installed |
-| Kotlin | AGP 9 built-in Kotlin (KGP runtime `2.2.10`) | deferred to #2 |
+| Kotlin | AGP 9 built-in Kotlin (KGP runtime `2.2.10`) | verified by scaffold builds |
 | NDK | none | installed NDK is not a baseline dependency |
 
 Do not apply `org.jetbrains.kotlin.android`; AGP 9 built-in Kotlin is enabled by default.
@@ -116,9 +115,9 @@ npm --version
 ```
 
 Expected results are `v22.23.1` and `10.9.8`. Node 24 may also exist on the host, but it
-is not the Glasseo build runtime. Issue #2 must add `.nvmrc`, a committed npm lockfile,
-and an exactly pinned small bundler (esbuild direction). The exact esbuild pin is deferred
-to #2 because no JavaScript package exists yet.
+is not the Glasseo build runtime. The scaffold pins esbuild `0.28.2`, TypeScript `5.9.2`,
+ESLint `10.9.1`, typescript-eslint `8.69.0`, Prettier `3.6.2`, and tsx `4.20.5` exactly in
+the committed npm lockfile. AndroidX WebKit is pinned to `1.17.0`.
 
 ## 5. Paseo runtime and version policy
 
@@ -160,8 +159,8 @@ review.
 
 ## 6. Build, test, lint, formatting, packaging, and CI contract
 
-There is no scaffold on `main`, so these commands are intentionally deferred to issue #2.
-Issue #2 must implement them with these exact entry points and make a clean checkout pass:
+The scaffold provides these non-interactive entry points, verified on `u4090` with JDK 17,
+Node 22.23.1, npm 10.9.8, and the Android SDK path from Section 4:
 
 ```bash
 . "$HOME/.nvm/nvm.sh"
@@ -191,9 +190,9 @@ Command ownership:
 - `assembleDebug` and `assembleRelease` must depend on the WebView asset build and produce
   reproducible APK paths under `app/build/outputs/apk/`.
 
-Issue #2 must create GitHub Actions that run npm install/build/typecheck/test/lint/format,
-Gradle unit tests/lint, and debug/release assembly on a clean checkout. Real-device checks
-remain Manager-run because GitHub-hosted CI has no Rokid device.
+`.github/workflows/ci.yml` runs npm install/build/typecheck/test/lint/format, Gradle unit
+tests/lint, and debug/release assembly from a clean checkout and uploads APK artifacts.
+Real-device checks remain Manager-run because GitHub-hosted CI has no Rokid device.
 
 No current command result should be represented as passing until #2 provides the files.
 
@@ -256,6 +255,9 @@ adb -s "$GLASSEO_DEVICE_SERIAL" logcat Glasseo:D AndroidRuntime:E '*:S'
 Issue #2 owns the final application ID and launch component; if it differs from
 `com.code2hack.glasseo`, update this document in the same change.
 
+Issue #2 retained application ID `com.code2hack.glasseo` and launch component
+`com.code2hack.glasseo/.MainActivity`. The stable bounded diagnostic tag is `Glasseo`.
+
 ### 7.1 Required WebView gate in issue #2
 
 The installed WebView is old enough that version inspection is insufficient. Before #2
@@ -271,6 +273,22 @@ passes, an instrumentation/smoke screen on the physical Rokid must exercise and 
 
 Failure of secure randomness is a blocker. A narrow native `SecureRandom` bridge may be
 planned and tested; predictable or downgraded randomness is forbidden.
+
+On 2026-09-02, `connectedDebugAndroidTest` passed these probes on serial
+`1906092617103125` with System WebView `95.0.4638.74`: HTTPS app-assets origin,
+non-ASCII `TextEncoder`/`TextDecoder`, Promise microtask ordering, IndexedDB write/close/
+reopen/read/delete, `crypto.getRandomValues`, the pinned Paseo Relay key-generation/export
+path, valid-TLS WSS text and binary `ArrayBuffer` echo, blocked remote main-frame
+navigation, and an absent privileged bridge in an untrusted data-origin frame.
+
+The default diagnostic probe tries `wss://echo.websocket.org` and Postman's documented
+`wss://ws.postman-echo.com/raw`; a `wss` query parameter can select one controlled
+valid-TLS endpoint. The external services were intermittently reachable from this device,
+so passing still requires one exact text and binary echo rather than endpoint reachability.
+No TLS bypass, cleartext WebSocket, mixed-content relaxation, or unrestricted JavaScript
+interface was used. Paseo Relay 0.7.0's published `import` export points at omitted source
+files, so the esbuild scaffold selects its published `node` condition, which resolves the
+browser-safe compiled distribution exercised by the device probe.
 
 ### 7.2 Camera, microphone, HID, QR, network, and Relay
 
@@ -400,8 +418,9 @@ and close only that command window after completion. Never capture or pass a sud
 
 ## 12. Known limitations and deferred verification
 
-- No Android/TypeScript scaffold, Gradle wrapper, package manifest, APK, tests, formatter,
-  linter, or CI exists yet; issue #2 owns all of them.
+- The #2 scaffold intentionally contains no product controls, device input mapping, Paseo
+  connection lifecycle, pairing, Agent UI/state, camera, microphone, sensor, or HID flow;
+  those remain owned by #3–#22.
 - The full command-line Rokid/Android toolchain is present. Android Studio is not part of
   the required or approved build contract; all reproducible builds use `./gradlew`.
 - `ANDROID_HOME` and `ANDROID_SDK_ROOT` were unset in the Manager shell; issue #2 should
@@ -409,12 +428,13 @@ and close only that command window after completion. Never capture or pass a sud
 - The physical device is connected now. Runtime permissions and device/UI setup are
   automated through ADB when supported; only residual physical unlock, cable, or peripheral
   pairing actions that cannot be automated remain human gates.
-- System WebView 95 capability and Paseo relay compatibility require the issue #2 real-device
-  smoke harness described above.
+- System WebView 95 capability and the pinned Paseo relay crypto bundle are covered by the
+  executable #2 instrumentation probe described above; full Relay connection lifecycle is
+  still owned by later tickets.
 - The emulator is available but is not a substitute for Rokid input, sensors, camera,
   microphone, HID, HUD, or WebView acceptance.
-- Real Paseo daemon/Relay integration is deferred until the scaffold can run, but it must
-  use unmodified Paseo 0.7.0 packages and standard offers.
+- Real Paseo daemon/Relay connection integration remains #4/#5 scope and must use unmodified
+  Paseo 0.7.0 packages and standard offers.
 
 ## 13. Issue #1 evidence executed
 
