@@ -6,10 +6,10 @@ This document is the verified development contract for Glasseo. It is governed b
 `SPEC.md`, `AGENTS.md`, GitHub issue #1, and the CTO architecture decision recorded on
 issue #1 on 2026-09-01.
 
-As of 2026-09-01, the repository contains governance and product documentation only.
-Issue #2 must create the Android/TypeScript scaffold and make every deferred command in
-this document executable. No implementation ticket is ready for dispatch until issue #1
-passes CTO review and closes.
+As of 2026-09-02, issue #1 is closed with CTO `PASS`, the one-time post-`DEV.md`
+reconciliation is complete, and issue #2 is the only `ready-for-agent` implementation
+ticket. Issue #2 must create the Android/TypeScript scaffold and make every deferred
+command in this document executable. Issues #3–#22 remain dependency-blocked.
 
 ## 2. Repository, host, and approved resources
 
@@ -21,7 +21,7 @@ passes CTO review and closes.
 | Manager tmux | `Glasseo:0.0` | active and owner-approved |
 | Worker placement | separate `Glasseo` tmux windows and isolated worktrees on `u4090` | owner-approved |
 | Worker profile | current default Codex profile | owner-approved |
-| Maximum concurrent Workers | 2 | owner-approved; spawning remains sequential |
+| Maximum concurrent Workers | 4 | owner-approved; spawning remains sequential |
 | Target device | Rokid `RG-glasses`, serial `1906092617103125` | authorized USB ADB device |
 | Device use | install, run, logs, and hardware verification | owner-approved |
 
@@ -274,20 +274,52 @@ planned and tested; predictable or downgraded randomness is forbidden.
 
 ### 7.2 Camera, microphone, HID, QR, network, and Relay
 
-- Camera, microphone, Bluetooth, and notification/runtime permissions are human gates
-  when Android presents a dialog. The Project Owner unlocks the device and approves them.
+- Device operations are automation-first. Use ADB for install/uninstall, launch/stop,
+  permission grants/revocations, app-ops, input injection, settings/UI automation, state
+  inspection, and evidence capture whenever the target firmware exposes a reliable path.
+  An Android permission dialog is not a human gate when the same permission can be applied
+  and verified through ADB. For the baseline package, declared runtime permissions may be
+  managed with commands such as
+  `adb shell pm grant com.code2hack.glasseo android.permission.CAMERA` and
+  `adb shell pm grant com.code2hack.glasseo android.permission.RECORD_AUDIO`; always verify
+  the resulting package/app-op state rather than inferring success from command exit alone.
 - Camera2 preview/capture and QR scanning require real-device verification under the
   actual 480x640 HUD lifecycle.
 - Microphone verification must cover start, streaming, cancellation, app backgrounding,
   and permission denial without retaining provisional audio/transcript state.
-- Built-in Rokid keys and Bluetooth HID bindings must work together. Device pairing,
-  cable movement, key identification, and reset verification are human gates.
+- Built-in Rokid keys and Bluetooth HID bindings must work together. Automate Bluetooth
+  settings navigation, pairing confirmation, key identification, and reset verification
+  through ADB when reliable. Escalate only a genuinely physical step that ADB cannot
+  perform, such as placing a peripheral into pairing mode or reconnecting an unavailable
+  cable.
 - Generate a standard offer on a Paseo 0.7.0 daemon with
   `paseo daemon pair --relay` (or `--json` for structured automation), scan it through
   Glasseo, and verify the offer's TLS/relay/public-key fields and E2EE connection.
 - Relay credentials, pairing offers, daemon private keys, QR payloads, and traffic content
   must never be committed or pasted into logs/issues. Record redacted connection results.
 - Do not expose a Paseo daemon directly to the public network for Glasseo testing.
+
+### 7.3 Debugging and evidence priority
+
+Logs and synchronized traces are stronger debugging and behavioral evidence than
+screenshots. Capture the evidence closest to the behavior being claimed:
+
+1. structured app/native/WebView logs and automated test output;
+2. synchronized raw/framework traces such as `getevent`, `logcat`, WebView console/CDP,
+   relay/WebSocket state, and redacted protocol events;
+3. authoritative Android state from `dumpsys`, package/app-op state, process/lifecycle
+   state, and persisted-state queries;
+4. screenshots or screen recordings as supporting evidence for visual layout only.
+
+Use monotonic or otherwise correlatable timestamps, record the source/provenance of each
+channel, and preserve command exit statuses. A screenshot must not substitute for traces
+when proving event identity, ordering, timing, suppression, lifecycle, transport,
+reconnection, persistence, or absence of duplicated actions. Redact credentials, pairing
+offers, private keys, and sensitive content from all recorded logs and traces.
+
+Screenshots remain useful for pixel/layout/HUD assertions and for orienting a trace, but a
+visual symptom should be paired with the strongest available state/log evidence. During
+debugging, prefer a bounded reproducible capture window over an unbounded log stream.
 
 ## 8. Credentials and browser boundary
 
@@ -320,7 +352,7 @@ raise an ALARM; never fall back to another conversation or browser profile.
   named `Glasseo-#<number>-worker@u4090`.
 - Every Worker prompt includes Manager coordinates `Glasseo:0.0`, exact issue/plan URLs,
   branch/worktree, acceptance criteria, commands from this file, and human-gate procedure.
-- The Manager creates Workers sequentially and never exceeds two active Workers.
+- The Manager creates Workers sequentially and never exceeds four active Workers.
 - Workers commit and push but do not merge. The Manager verifies the remote branch, opens
   the PR, obtains CTO review, and merges only after `PASS` and required checks.
 - Commit/amend operations created by Codex must include exactly one `Codex-Host` and one
@@ -351,9 +383,13 @@ explicit move; the command above avoids that ambiguity by selecting the sink in 
 An ALARM report to the Project Owner states the event, affected issue/Worker, exact owner
 action, and safe repository/device/process state. After raising it, preserve state and wait.
 
-Human gates include device unlock/cable/pairing/permission actions, login or secret entry,
-specification changes, destructive/security-sensitive actions not already approved, new
-hosts/profiles/concurrency, and any ambiguity that changes visible behavior.
+Human gates are restricted to steps that actually require owner judgment, credentials, or
+physical action after safe automation has been exhausted. ADB-capable unlock-independent
+device setup, permission handling, input/UI automation, application lifecycle, and evidence
+capture must not interrupt the owner. Human gates include an unlock or cable/peripheral
+action that ADB cannot perform, secret/login entry, specification changes,
+destructive/security-sensitive actions not already approved, new hosts/profiles or
+concurrency above four, and ambiguity that materially changes visible behavior.
 
 ## 11. Privileged commands
 
@@ -370,8 +406,9 @@ and close only that command window after completion. Never capture or pass a sud
   the required or approved build contract; all reproducible builds use `./gradlew`.
 - `ANDROID_HOME` and `ANDROID_SDK_ROOT` were unset in the Manager shell; issue #2 should
   commit no machine-specific SDK path and may use an untracked `local.properties` on hosts.
-- The physical device is connected now, but unlock, cable, runtime permissions, and
-  Bluetooth pairing remain human gates.
+- The physical device is connected now. Runtime permissions and device/UI setup are
+  automated through ADB when supported; only residual physical unlock, cable, or peripheral
+  pairing actions that cannot be automated remain human gates.
 - System WebView 95 capability and Paseo relay compatibility require the issue #2 real-device
   smoke harness described above.
 - The emulator is available but is not a substitute for Rokid input, sensors, camera,
