@@ -55,3 +55,14 @@ output {
   color: #8ed6ff;
   font-size: 14px;
 }
+
+.hid-input-trace-heading {
+  color: #fff;
+  font-size: 14px;
+}
+
+.hid-input-trace {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

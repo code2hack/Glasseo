@@ -286,6 +286,60 @@ class WebViewQualificationTest {
         }
     }
 
+    @Test fun physicalSecondaryDoubleKeepsRawDecisionTraceVisibleAcrossPhaseChange() {
+        val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
+            .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
+        ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
+            assertNotNull(ProbeState.await(60))
+            lateinit var identity: HidPhysicalIdentity
+            scenario.onActivity {
+                val bindings = (it.application as GlasseoApplication).hidBindings
+                identity = bindings.identityFor(SemanticControl.SECONDARY) ?: hidIdentity(2).also { candidate ->
+                    assertTrue(bindings.bind(SemanticControl.SECONDARY, candidate))
+                }
+                it.startQualificationForTest(QualificationStep.DOUBLE_SECONDARY, QualificationMode.HID)
+            }
+            awaitState(
+                scenario,
+                QualificationStep.DOUBLE_SECONDARY,
+                QualificationPhase.AWAITING_FIRST,
+                armed = true,
+            )
+            val owner = PhysicalOwner(PhysicalSource.HID, 90, identity.keyCode)
+            val downAt = android.os.SystemClock.uptimeMillis()
+            scenario.onActivity {
+                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.DOWN, downAt)
+                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.UP, downAt + 100)
+                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.DOWN, downAt + 380)
+                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.UP, downAt + 520)
+            }
+            val settling = awaitState(
+                scenario,
+                QualificationStep.DOUBLE_SECONDARY,
+                QualificationPhase.SETTLING_FIRST,
+                armed = false,
+            )
+            scenario.onActivity {
+                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.REPEAT, downAt + 600)
+                assertEquals(settling.revision, (it.application as GlasseoApplication).qualificationSession!!.snapshot.revision)
+            }
+
+            val trace = awaitHidTrace(scenario, "rejected:capture-disarmed")
+            assertTrue(trace.contains("DOWN keyCode=${identity.keyCode} scanCode=${identity.scanCode}"))
+            assertTrue(trace.contains("UP keyCode=${identity.keyCode} scanCode=${identity.scanCode}"))
+            assertTrue(trace.contains("gap=280 reason=secondary-down:confirmation gap=280ms"))
+            assertTrue(trace.contains("repeatCount=1"))
+
+            awaitState(
+                scenario,
+                QualificationStep.DOUBLE_SECONDARY,
+                QualificationPhase.AWAITING_CONFIRMATION,
+                armed = true,
+            )
+            assertTrue(readHidTrace(scenario).contains("rejected:capture-disarmed"))
+        }
+    }
+
     @Test fun hidPauseReloadAndResumeKeepProcessInterceptionActive() {
         val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
@@ -473,6 +527,30 @@ class WebViewQualificationTest {
         }
         assertTrue(latch.await(10, TimeUnit.SECONDS))
         return value
+    }
+
+    private fun readHidTrace(scenario: ActivityScenario<MainActivity>): String {
+        val latch = CountDownLatch(1)
+        var value = ""
+        scenario.onActivity { activity ->
+            activity.readHidTraceDomForTest {
+                value = JSONObject("{\"value\":$it}").getString("value")
+                latch.countDown()
+            }
+        }
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        return value
+    }
+
+    private fun awaitHidTrace(scenario: ActivityScenario<MainActivity>, expected: String): String {
+        val deadline = System.currentTimeMillis() + 10_000
+        var trace = ""
+        while (System.currentTimeMillis() < deadline) {
+            trace = readHidTrace(scenario)
+            if (trace.contains(expected)) return trace
+            Thread.sleep(50)
+        }
+        throw AssertionError("HID trace did not contain $expected: $trace")
     }
 
     private fun shortCommand() = operation(BehaviorClass.SHORT, "com.android.action.ACTION_SPRITE_BUTTON_UP")

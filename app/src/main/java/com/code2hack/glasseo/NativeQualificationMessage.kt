@@ -1,5 +1,6 @@
 package com.code2hack.glasseo
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 object NativeQualificationMessage {
@@ -24,6 +25,30 @@ object NativeQualificationMessage {
         .put("paused", state.paused)
         .put("complete", state.complete)
         .toString()
+
+    fun hidInputTrace(events: List<HidInputTraceEntry>): String = JSONObject()
+        .put("type", "hid-input-trace")
+        .put("events", JSONArray(events.map(::hidInputTraceEvent)))
+        .toString()
+
+    private fun hidInputTraceEvent(event: HidInputTraceEntry) = JSONObject()
+        .put("sequence", event.sequence)
+        .put("action", event.action)
+        .put("keyCode", event.identity.keyCode)
+        .put("scanCode", event.identity.scanCode)
+        .put("repeatCount", event.repeatCount)
+        .put("eventTimeMillis", event.eventTimeMillis)
+        .put("receivedElapsedRealtimeMillis", event.receivedElapsedRealtimeMillis)
+        .put("eventSource", event.eventSource)
+        .put("deviceId", event.deviceId)
+        .put("descriptor", event.identity.descriptor)
+        .put("vendorId", event.identity.vendorId)
+        .put("productId", event.identity.productId)
+        .put("sources", event.identity.sources)
+        .put("physicalSource", PhysicalSource.HID.name)
+        .put("pressDurationMillis", event.pressDurationMillis ?: JSONObject.NULL)
+        .put("releaseToNextDownMillis", event.releaseToNextDownMillis ?: JSONObject.NULL)
+        .put("reason", event.reason)
 }
 
 val QualificationStep.displayName: String

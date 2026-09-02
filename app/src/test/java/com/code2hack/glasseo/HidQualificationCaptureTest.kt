@@ -1,7 +1,9 @@
 package com.code2hack.glasseo
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HidQualificationCaptureTest {
@@ -37,14 +39,15 @@ class HidQualificationCaptureTest {
         val competingIdentity = identity.copy(keyCode = 67, scanCode = 14)
         capture.handle(owner, identity, SemanticControl.PRIMARY, PhysicalAction.DOWN, 0)
 
-        assertNull(
-            capture.handle(
+        assertEquals(
+            "down-ignored:active-owner=$owner",
+            capture.handleDetailed(
                 competingOwner,
                 competingIdentity,
                 SemanticControl.SECONDARY,
                 PhysicalAction.DOWN,
                 10,
-            ),
+            ).reason,
         )
         assertNull(
             capture.handle(
@@ -96,6 +99,102 @@ class HidQualificationCaptureTest {
 
         assertEquals(BehaviorClass.DOUBLE, operation.signature.behavior)
         assertEquals(listOf(HidPressTiming(0, 100), HidPressTiming(300, 350)), operation.hidPresses)
+    }
+
+    @Test fun physicalSecondaryDoubleSurvivesAStaleRenderAckWithoutRepeats() {
+        val bindings = HidBindingMap().apply { assertTrue(bind(SemanticControl.SECONDARY, identity)) }
+        val session = QualificationSession(
+            QualificationMode.HID,
+            "secondary-double",
+            bindings,
+            QualificationStep.DOUBLE_SECONDARY.ordinal,
+            nowMillis = { 1_000L },
+        )
+        assertTrue(
+            session.acknowledge(
+                QualificationRenderAck(
+                    "secondary-double",
+                    session.snapshot.revision,
+                    QualificationStep.DOUBLE_SECONDARY.ordinal,
+                    QualificationPhase.AWAITING_FIRST,
+                ),
+            ).accepted,
+        )
+        val capture = HidQualificationCapture()
+
+        assertEquals(
+            "secondary-down:first-tap",
+            capture.handleDetailed(
+                owner,
+                identity,
+                SemanticControl.SECONDARY,
+                PhysicalAction.DOWN,
+                100,
+            ).reason,
+        )
+        assertEquals(
+            "secondary-up:awaiting-second-tap duration=100ms",
+            capture.handleDetailed(
+                owner,
+                identity,
+                SemanticControl.SECONDARY,
+                PhysicalAction.UP,
+                200,
+            ).reason,
+        )
+        assertFalse(
+            session.acknowledge(
+                QualificationRenderAck(
+                    "secondary-double",
+                    session.snapshot.revision - 1,
+                    QualificationStep.DOUBLE_SECONDARY.ordinal,
+                    QualificationPhase.AWAITING_FIRST,
+                ),
+            ).accepted,
+        )
+        assertTrue(session.armed)
+        assertEquals(
+            "secondary-down:confirmation gap=280ms",
+            capture.handleDetailed(
+                owner,
+                identity,
+                SemanticControl.SECONDARY,
+                PhysicalAction.DOWN,
+                480,
+            ).reason,
+        )
+        val secondUp = capture.handleDetailed(
+            owner,
+            identity,
+            SemanticControl.SECONDARY,
+            PhysicalAction.UP,
+            620,
+        )
+
+        assertEquals("accepted-DOUBLE duration=140ms gap=280ms", secondUp.reason)
+        assertEquals(
+            listOf(HidPressTiming(100, 200), HidPressTiming(480, 620)),
+            secondUp.operation?.hidPresses,
+        )
+        assertTrue(session.capture(checkNotNull(secondUp.operation)) is CaptureAdmission.Accepted)
+        assertEquals(QualificationPhase.SETTLING_FIRST, session.snapshot.phase)
+    }
+
+    @Test fun secondaryGapOutsideThresholdRestartsWithAnExactReason() {
+        val capture = HidQualificationCapture()
+        capture.handleDetailed(owner, identity, SemanticControl.SECONDARY, PhysicalAction.DOWN, 0)
+        capture.handleDetailed(owner, identity, SemanticControl.SECONDARY, PhysicalAction.UP, 100)
+
+        val nextDown = capture.handleDetailed(
+            owner,
+            identity,
+            SemanticControl.SECONDARY,
+            PhysicalAction.DOWN,
+            451,
+        )
+
+        assertNull(nextDown.operation)
+        assertEquals("secondary-down:gap-exceeded 351ms; restarted-first-tap", nextDown.reason)
     }
 
     @Test fun disconnectCancelsWithoutCompletionAndStableIdentitySurvivesNewDeviceId() {

@@ -12,6 +12,7 @@ class GlasseoApplication : Application() {
     internal lateinit var orderedInterception: PersistentOrderedBroadcastInterception
         private set
     val hidBindings = HidBindingMap()
+    val hidInputTrace = HidInputTraceRecorder()
     var qualificationSession: QualificationSession? = null
         private set
 

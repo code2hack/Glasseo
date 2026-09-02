@@ -292,7 +292,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 .onSuccess {
                     ProbeState.record(it)
                     when (it) {
-                        BridgeMessage.Hello -> postQualificationState("web-ready")
+                        BridgeMessage.Hello -> {
+                            postQualificationState("web-ready")
+                            postHidInputTrace()
+                        }
                         is BridgeMessage.QualificationStart -> if (captureInput) startQualification(it.mode)
                         is BridgeMessage.QualificationRendered -> acknowledgeQualificationRender(it)
                         else -> Unit
@@ -378,10 +381,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun startQualification(mode: QualificationMode) {
         clearQualificationCheckpoint()
+        if (mode == QualificationMode.HID) glasseoApplication.hidInputTrace.clear()
         glasseoApplication.startQualification(mode, pauseAt = qualificationPauseTarget)
         hidQualificationCapture = if (mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
         publishQualificationMutation("start")
+        postHidInputTrace()
         trace("qualification-start", "mode=$mode")
     }
 
@@ -396,30 +401,50 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private fun handleHidQualification(event: KeyEvent) {
         val action = event.physicalAction() ?: return
         handleHidQualification(
-            PhysicalOwner(PhysicalSource.HID, event.deviceId, event.keyCode),
-            event.hidIdentity(),
-            action,
-            event.eventTime,
+            HidRawInput(
+                action,
+                event.hidIdentity(),
+                event.deviceId,
+                event.repeatCount,
+                event.eventTime,
+                SystemClock.elapsedRealtime(),
+                event.source,
+            ),
         )
     }
 
-    private fun handleHidQualification(
-        owner: PhysicalOwner,
-        identity: HidPhysicalIdentity,
-        action: PhysicalAction,
-        timeMillis: Long,
-    ) {
+    private fun handleHidQualification(input: HidRawInput) {
         val session = qualificationSession ?: return
         if (session.snapshot.complete) return
-        if (!session.armed) return traceQualificationIgnored(session, "hid-$action")
-        val operation = hidQualificationCapture?.handle(
-            owner,
-            identity,
-            session.wizard.currentStep.control,
-            action,
-            timeMillis,
+        val owner = PhysicalOwner(PhysicalSource.HID, input.deviceId, input.identity.keyCode)
+        val result = if (session.armed) {
+            hidQualificationCapture?.handleDetailed(
+                owner,
+                input.identity,
+                session.wizard.currentStep.control,
+                input.action,
+                input.eventTimeMillis,
+            ) ?: HidCaptureResult(reason = "rejected:capture-unavailable")
+        } else {
+            val reason = "rejected:capture-disarmed step=${session.snapshot.step} " +
+                "phase=${session.snapshot.phase} revision=${session.snapshot.revision}"
+            traceQualificationIgnored(session, "hid-${input.action}")
+            HidCaptureResult(reason = reason)
+        }
+        val diagnostic = glasseoApplication.hidInputTrace.record(input, result.reason)
+        trace(
+            "qualification-hid-input",
+            "sequence=${diagnostic.sequence} action=${input.action} keyCode=${input.identity.keyCode} " +
+                "scanCode=${input.identity.scanCode} repeat=${input.repeatCount} " +
+                "eventTime=${input.eventTimeMillis} elapsed=${input.receivedElapsedRealtimeMillis} " +
+                "eventSource=${input.eventSource} deviceId=${input.deviceId} descriptor=${input.identity.descriptor} " +
+                "vendor=${input.identity.vendorId} product=${input.identity.productId} " +
+                "sources=${input.identity.sources} duration=${diagnostic.pressDurationMillis} " +
+                "gap=${diagnostic.releaseToNextDownMillis} reason=${diagnostic.reason}",
         )
-        scheduleDeadline()
+        postHidInputTrace()
+        if (session.armed) scheduleDeadline()
+        val operation = result.operation
         if (operation != null) {
             when (val admission = session.capture(operation)) {
                 is CaptureAdmission.Accepted -> {
@@ -629,6 +654,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         postNative(NativeQualificationMessage.state(snapshot))
     }
 
+    private fun postHidInputTrace() {
+        val session = qualificationSession ?: return
+        if (session.mode != QualificationMode.HID) return
+        postNative(NativeQualificationMessage.hidInputTrace(glasseoApplication.hidInputTrace.snapshot()))
+    }
+
     private fun acknowledgeQualificationRender(message: BridgeMessage.QualificationRendered) {
         val session = qualificationSession ?: return
         val ack = QualificationRenderAck(message.sessionId, message.revision, message.stepIndex, message.phase)
@@ -684,6 +715,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         mode: QualificationMode = QualificationMode.BUILT_IN,
     ) {
         clearQualificationCheckpoint()
+        if (mode == QualificationMode.HID) glasseoApplication.hidInputTrace.clear()
         glasseoApplication.startQualification(mode, step.ordinal, qualificationPauseTarget)
         hidQualificationCapture = if (mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
@@ -710,7 +742,16 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         identity: HidPhysicalIdentity,
         action: PhysicalAction,
         timeMillis: Long,
-    ) = handleHidQualification(owner, identity, action, timeMillis)
+    ) = handleHidQualification(
+        HidRawInput(
+            action,
+            identity,
+            owner.deviceId,
+            if (action == PhysicalAction.REPEAT) 1 else 0,
+            timeMillis,
+            SystemClock.elapsedRealtime(),
+        ),
+    )
 
     internal fun reloadQualificationForTest() {
         qualificationSession?.suspendCapture()
@@ -733,6 +774,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 "document.querySelector('.qualification-prompt').textContent",
             callback,
         )
+    }
+
+    internal fun readHidTraceDomForTest(callback: (String) -> Unit) {
+        webView.evaluateJavascript("document.querySelector('.hid-input-trace')?.textContent ?? ''", callback)
     }
 
     private fun scheduleDeadline() {
