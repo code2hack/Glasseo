@@ -78,10 +78,10 @@ data class HidQualificationResult(
         get() = peripheral != null &&
             bindings.keys == SemanticControl.entries.toSet() &&
             bindings.values.toSet().size == SemanticControl.entries.size &&
-            bindings.values.all { it.peripheral == peripheral } &&
+            bindings.values.all { peripheral.sameDevice(it.peripheral) } &&
             operations.keys == QualificationStep.entries.toSet() &&
             operations.values.all {
-                it.verdict == OperationVerdict.PASS && it.hidCaptures.size == 2 &&
+                it.verdict == OperationVerdict.PASS && it.hidCaptures.size == 1 &&
                     it.hidCaptures.all { capture -> validHidPresses(it.step.behavior, capture) }
             }
 }
@@ -111,12 +111,12 @@ class QualificationWizard(
         }
         if (mode == QualificationMode.HID) {
             val signature = operation.signature as? HidOperationSignature ?: return reset("HID input required")
-            if (bindings.peripheral?.let { it != signature.identity.peripheral } == true) {
+            if (bindings.peripheral?.let { !it.sameDevice(signature.identity.peripheral) } == true) {
                 reset("Use the same HID device")
                 return
             }
             val expected = bindings.identityFor(step.control)
-            if (step.verifiesExistingBinding && signature.identity != expected) {
+            if (step.verifiesExistingBinding && expected?.sameControl(signature.identity) != true) {
                 reset("Use the same ${step.control.name} button")
                 return
             }

@@ -15,6 +15,8 @@ class GlasseoApplication : Application() {
     val hidInputTrace = HidInputTraceRecorder()
     var qualificationSession: QualificationSession? = null
         private set
+    var hidQualificationFlow: HidQualificationFlow? = null
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -49,6 +51,14 @@ class GlasseoApplication : Application() {
         pauseAt: QualificationPauseTarget? = null,
     ): QualificationSession = newQualification(mode, startIndex, emptyMap(), pauseAt)
 
+    fun startHidQualification(peripheral: HidPeripheralIdentity): HidQualificationFlow {
+        qualificationSession = null
+        hidBindings.clear()
+        return HidQualificationFlow(UUID.randomUUID().toString(), peripheral, hidBindings).also {
+            hidQualificationFlow = it
+        }
+    }
+
     fun restoreQualification(
         checkpoint: QualificationCheckpoint,
         pauseAt: QualificationPauseTarget? = null,
@@ -76,7 +86,10 @@ class GlasseoApplication : Application() {
         },
         nowMillis = SystemClock::uptimeMillis,
         pauseAt = pauseAt,
-    ).also { qualificationSession = it }
+    ).also {
+        hidQualificationFlow = null
+        qualificationSession = it
+    }
 
     companion object {
         val ORDERED_CONTROL_ACTIONS = setOf(

@@ -25,6 +25,19 @@ class BridgeMessageTest {
                     "\"stepIndex\":5,\"phase\":\"AWAITING_FIRST\"}",
             ),
         )
+        assertEquals(
+            BridgeMessage.HidQualificationRendered(
+                "hid-1",
+                8,
+                HidQualificationStage.BINDING,
+                3,
+                HidQualificationPhase.AWAITING_INPUT,
+            ),
+            BridgeMessage.parse(
+                "{\"type\":\"hid-qualification-rendered\",\"sessionId\":\"hid-1\",\"revision\":8," +
+                    "\"stage\":\"BINDING\",\"stepIndex\":3,\"phase\":\"AWAITING_INPUT\"}",
+            ),
+        )
     }
 
     @Test fun rejectsMalformedAndUnknownMessages() {

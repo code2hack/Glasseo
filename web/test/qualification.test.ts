@@ -75,6 +75,37 @@ test("qualification native messages fail closed", () => {
   );
 });
 
+test("HID binding and recognition snapshots render separate seven and ten step progress", () => {
+  const binding = decodeQualificationMessage(JSON.stringify(hidSnapshot()));
+  assert.equal(binding.type, "hid-qualification-state");
+  if (binding.type !== "hid-qualification-state")
+    throw new Error("Expected HID state");
+  let state = reduceQualification(
+    { view: "landing" },
+    { type: "native-state", snapshot: binding },
+  );
+  assert.equal(qualificationHeading(state), "1/7 Bind PRIMARY");
+  assert.equal(state.settleDeadlineMillis, null);
+
+  const recognition = decodeQualificationMessage(
+    JSON.stringify(
+      hidSnapshot({
+        revision: 15,
+        stage: "RECOGNITION",
+        stepCount: 10,
+        stepName: "Short PRIMARY",
+      }),
+    ),
+  );
+  if (recognition.type !== "hid-qualification-state")
+    throw new Error("Expected HID state");
+  state = reduceQualification(state, {
+    type: "native-state",
+    snapshot: recognition,
+  });
+  assert.equal(qualificationHeading(state), "1/10 Short PRIMARY");
+});
+
 test("newest native revision wins and duplicate snapshots are idempotent", () => {
   const shortCommand = snapshot({
     sessionId: "builtin-1",
@@ -229,6 +260,24 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     prompt: "Perform the intended action",
     error: null,
     paused: false,
+    complete: false,
+    ...overrides,
+  };
+}
+
+function hidSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "hid-qualification-state" as const,
+    sessionId: "hid-session-1",
+    revision: 1,
+    stage: "BINDING" as const,
+    stepIndex: 0,
+    stepCount: 7,
+    stepName: "Bind PRIMARY",
+    phase: "AWAITING_INPUT" as const,
+    prompt: "Press the button you wanna bind",
+    error: null,
+    settleDeadlineMillis: null,
     complete: false,
     ...overrides,
   };

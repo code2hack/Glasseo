@@ -37,26 +37,67 @@ class NativeQualificationMessageTest {
         val identity = HidPhysicalIdentity("joy-con", 1406, 8199, 105, 313, 0x01000511)
         val trace = HidInputTraceRecorder(limit = 2)
 
-        val down = trace.record(
-            HidRawInput(PhysicalAction.DOWN, identity, 6, 0, 100, 102),
-            "secondary-down:first-tap",
-        )
-        val up = trace.record(
-            HidRawInput(PhysicalAction.UP, identity, 6, 0, 200, 203),
-            "secondary-up:awaiting-second-tap duration=100ms",
-        )
-        val nextDown = trace.record(
-            HidRawInput(PhysicalAction.DOWN, identity, 6, 0, 480, 482),
-            "secondary-down:confirmation gap=280ms",
-        )
+        val downReceipt = trace.recordRaw(HidRawInput(PhysicalAction.DOWN, identity, 6, 0, 100, 102))
+        trace.recordDecision(downReceipt.sequence, "secondary-down:first-tap")
+        val upReceipt = trace.recordRaw(HidRawInput(PhysicalAction.UP, identity, 6, 0, 200, 203))
+        trace.recordDecision(upReceipt.sequence, "secondary-up:awaiting-second-tap duration=100ms")
+        val nextDownReceipt = trace.recordRaw(HidRawInput(PhysicalAction.DOWN, identity, 6, 0, 480, 482))
+        trace.recordDecision(nextDownReceipt.sequence, "secondary-down:confirmation gap=280ms")
+        val snapshot = trace.snapshot()
+        val (up, nextDown) = snapshot.events
 
-        assertNull(down.pressDurationMillis)
-        assertEquals(100L, up.pressDurationMillis)
-        assertEquals(280L, nextDown.releaseToNextDownMillis)
-        assertEquals(listOf(up, nextDown), trace.snapshot())
+        assertNull(downReceipt.pressDurationMillis)
+        assertEquals(100L, up.receipt.pressDurationMillis)
+        assertEquals(280L, nextDown.receipt.releaseToNextDownMillis)
+        assertEquals(3, snapshot.totalRawReceipts)
+        assertEquals(3, snapshot.totalDecisions)
+        assertEquals(0, snapshot.droppedRecords)
+        assertEquals(3, trace.allRawReceipts().size)
+        assertEquals(3, trace.allDecisions().size)
 
-        val json = JSONObject(NativeQualificationMessage.hidInputTrace(trace.snapshot()))
+        trace.startAttempt(
+            "A01",
+            QualificationStep.SHORT_PRIMARY,
+            HidQualificationPhase.AWAITING_INPUT,
+            identity.peripheral,
+            identity,
+            490,
+            500,
+            1_500,
+        )
+        trace.expireAttempt("A01", 2_000)
+        val attempt = trace.snapshot().attempt
+        assertEquals(QualificationStep.SHORT_PRIMARY, attempt?.operation)
+        assertEquals(HidQualificationPhase.AWAITING_INPUT, attempt?.phase)
+        assertEquals(490L, attempt?.supervisorElapsedRealtimeMillis)
+        assertEquals(HidAttemptStatus.NO_ANDROID_EVENT, attempt?.status)
+        val encodedSnapshot = trace.snapshot()
+
+        trace.startAttempt(
+            "A02",
+            QualificationStep.SHORT_PRIMARY,
+            HidQualificationPhase.AWAITING_INPUT,
+            identity.peripheral,
+            identity,
+            2_100,
+            2_110,
+            1_500,
+        )
+        trace.recordRaw(HidRawInput(PhysicalAction.DOWN, identity.copy(keyCode = 106), 6, 0, 2_200, 2_202))
+        assertEquals(HidAttemptStatus.AWAITING_ANDROID_EVENT, trace.snapshot().attempt?.status)
+        val matching = trace.recordRaw(HidRawInput(PhysicalAction.DOWN, identity, 6, 0, 2_300, 2_302))
+        assertEquals(HidAttemptStatus.ANDROID_EVENT_RECEIVED, trace.snapshot().attempt?.status)
+        assertEquals(matching.sequence, trace.snapshot().attempt?.firstRawSequence)
+
+        val json = JSONObject(NativeQualificationMessage.hidInputTrace(encodedSnapshot))
         assertEquals("hid-input-trace", json.getString("type"))
+        assertEquals(3, json.getInt("totalRawReceipts"))
+        assertEquals(3, json.getInt("totalDecisions"))
+        assertEquals(0, json.getInt("droppedRecords"))
+        val encodedAttempt = json.getJSONObject("attempt")
+        assertEquals("SHORT_PRIMARY", encodedAttempt.getString("operation"))
+        assertEquals("AWAITING_INPUT", encodedAttempt.getString("phase"))
+        assertEquals(490L, encodedAttempt.getLong("supervisorElapsedRealtimeMillis"))
         val encoded = json.getJSONArray("events").getJSONObject(1)
         assertEquals("DOWN", encoded.getString("action"))
         assertEquals(105, encoded.getInt("keyCode"))

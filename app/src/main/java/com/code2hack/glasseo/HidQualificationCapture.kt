@@ -32,6 +32,12 @@ class HidQualificationCapture(private val timing: InputTiming = InputTiming()) {
             pendingSecondaryPress?.timing?.upAtMillis?.plus(timing.doublePressMillis + 1),
         ).minOrNull()
 
+    val hasActivePress: Boolean
+        get() = activePress != null
+
+    val hasPendingInput: Boolean
+        get() = activePress != null || pendingSecondaryPress != null
+
     fun handle(
         owner: PhysicalOwner,
         identity: HidPhysicalIdentity,
@@ -49,7 +55,7 @@ class HidQualificationCapture(private val timing: InputTiming = InputTiming()) {
     ): HidCaptureResult {
         val activeOwner = activePress?.owner
         val previousSecondary = pendingSecondaryPress?.takeIf {
-            control == SemanticControl.SECONDARY && it.owner == owner && it.identity == identity
+            control == SemanticControl.SECONDARY && it.owner == owner && it.identity.sameControl(identity)
         }
         val releaseToNextDownMillis = if (action == PhysicalAction.DOWN) {
             previousSecondary?.let { timeMillis - it.timing.upAtMillis }
@@ -82,7 +88,7 @@ class HidQualificationCapture(private val timing: InputTiming = InputTiming()) {
             )
         }
         if (action != PhysicalAction.UP) return HidCaptureResult(reason = "action-ignored")
-        val press = activePress?.takeIf { it.owner == owner }
+        val press = activePress?.takeIf { it.owner == owner && it.identity.sameControl(identity) }
             ?: return HidCaptureResult(reason = "up-owner-mismatch")
         val timing = HidPressTiming(press.downAtMillis, timeMillis)
         val duration = timing.upAtMillis - timing.downAtMillis
@@ -108,7 +114,7 @@ class HidQualificationCapture(private val timing: InputTiming = InputTiming()) {
         val presses = if (behavior == BehaviorClass.DOUBLE) {
             listOfNotNull(
                 pendingSecondaryPress
-                    ?.takeIf { it.owner == owner && it.identity == press.identity }
+                    ?.takeIf { it.owner == owner && it.identity.sameControl(press.identity) }
                     ?.timing,
                 timing,
             )

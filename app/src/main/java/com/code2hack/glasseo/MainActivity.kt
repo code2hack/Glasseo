@@ -1,14 +1,18 @@
 package com.code2hack.glasseo
 
 import android.app.Activity
+import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.graphics.Bitmap
 import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -33,11 +37,6 @@ import androidx.webkit.WebViewFeature
 import androidx.webkit.WebMessageCompat
 
 class MainActivity : Activity(), InputManager.InputDeviceListener {
-    private data class PendingHidFinalizer(
-        val token: QualificationFinalizerToken,
-        val operation: QualificationOperation,
-    )
-
     private lateinit var root: FrameLayout
     private lateinit var webView: WebView
     private lateinit var inputManager: InputManager
@@ -45,17 +44,31 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private val handler = Handler(Looper.getMainLooper())
     private val longPressCheck = Runnable {
         val now = SystemClock.uptimeMillis()
-        hidQualificationCapture?.advance(now)
         emit(inputController.advance(now))
         scheduleDeadline()
     }
     private val finishBuiltInCapture = Runnable { finalizeBuiltInAttempt() }
-    private val finishHidCapture = Runnable { finalizeHidAttempt() }
     private val externalDevices = mutableSetOf<Int>()
-    private var hidQualificationCapture: HidQualificationCapture? = null
     private var builtInCapture: InputCapture? = null
     private var builtInFinalizerToken: QualificationFinalizerToken? = null
-    private var pendingHidFinalizer: PendingHidFinalizer? = null
+    private var hidAttemptReceiverRegistered = false
+    private var hidAttemptWatchdog: Runnable? = null
+    private val hidAttemptReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != HID_ATTEMPT_ACTION) return
+            val attemptId = intent.getStringExtra(HID_ATTEMPT_ID_EXTRA).orEmpty()
+            val supervisorTime = intent.getLongExtra(HID_ATTEMPT_SUPERVISOR_TIME_EXTRA, -1)
+            runCatching {
+                startHidAttemptMarker(
+                    attemptId,
+                    QualificationStep.valueOf(intent.getStringExtra(HID_ATTEMPT_OPERATION_EXTRA).orEmpty()),
+                    HidQualificationPhase.valueOf(intent.getStringExtra(HID_ATTEMPT_PHASE_EXTRA).orEmpty()),
+                    supervisorTime,
+                )
+            }
+                .onFailure { trace("hid-attempt-marker-rejected", it.message ?: "invalid") }
+        }
+    }
     private var attemptBrightness = -1
     private var attemptFocusLost = false
     private val attemptLifecycle = mutableSetOf<String>()
@@ -118,14 +131,23 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         }.getOrNull()
     }
 
+    @SuppressLint("UnspecifiedRegisterReceiverFlag")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         trace("lifecycle", "create")
+        if (captureInput) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(hidAttemptReceiver, IntentFilter(HID_ATTEMPT_ACTION), Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(hidAttemptReceiver, IntentFilter(HID_ATTEMPT_ACTION))
+            }
+            hidAttemptReceiverRegistered = true
+        }
         glasseoApplication.observeOrderedBroadcasts(orderedBroadcastObserver)
         qualificationSession?.let { session ->
             session.suspendCapture()
-            hidQualificationCapture = if (session.mode == QualificationMode.HID) HidQualificationCapture() else null
         }
+        glasseoApplication.hidQualificationFlow?.suspendCapture()
         if (debuggable && intent.getBooleanExtra(QUALIFICATION_RESUME_EXTRA, false)) resumeQualification()
         root = FrameLayout(this).also { setContentView(it) }
         webView = WebView(this)
@@ -144,7 +166,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     override fun onResume() {
         super.onResume()
         trace("lifecycle", "resume")
-        if (webReady) postQualificationState("resume")
+        if (webReady) postActiveQualificationState("resume")
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -173,14 +195,15 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             if (builtInCapture != null) attemptFocusLost = true
             cancelInputs("focus-loss")
         } else {
-            postQualificationState("focus-regained")
+            postActiveQualificationState("focus-regained")
         }
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(longPressCheck)
         handler.removeCallbacks(finishBuiltInCapture)
-        handler.removeCallbacks(finishHidCapture)
+        hidAttemptWatchdog?.let(handler::removeCallbacks)
+        if (hidAttemptReceiverRegistered) unregisterReceiver(hidAttemptReceiver)
         nonOrderedBroadcastObservation.end()
         glasseoApplication.stopObservingOrderedBroadcasts(orderedBroadcastObserver)
         inputManager.unregisterInputDeviceListener(this)
@@ -192,10 +215,18 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val source = sourceFor(event.device)
+        val recordedHid = if (source == PhysicalSource.HID) recordHidAtDispatchEntry(event) else null
         traceKey(event, source)
+        val hidFlow = glasseoApplication.hidQualificationFlow
+        if (captureInput && hidFlow != null && hidFlow.snapshot.stage != HidQualificationStage.COMPLETE &&
+            source == PhysicalSource.HID && recordedHid != null
+        ) {
+            handleHidQualificationFlow(recordedHid.first, recordedHid.second.sequence)
+            return true
+        }
         if (captureInput && qualificationSession?.snapshot?.complete == false && source != null) {
             when (qualificationSession?.mode) {
-                QualificationMode.HID -> if (source == PhysicalSource.HID) handleHidQualification(event)
+                QualificationMode.HID -> Unit
                 QualificationMode.BUILT_IN -> if (source == PhysicalSource.BUILT_IN) recordBuiltInKey(event)
                 null -> Unit
             }
@@ -206,7 +237,11 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             PhysicalSource.BUILT_IN -> null
             null -> null
         }
-        if (source != null && control != null && handleKey(event, source, control)) return true
+        if (source != null && control != null && handleKey(event, source, control)) {
+            recordedHid?.let { recordHidDecision(it.second.sequence, "accepted:semantic-${control.name}") }
+            return true
+        }
+        recordedHid?.let { recordHidDecision(it.second.sequence, "rejected:no-active-HID-binding") }
         return if (consumeUnmapped) true else super.dispatchKeyEvent(event)
     }
 
@@ -247,16 +282,18 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     override fun onInputDeviceRemoved(deviceId: Int) {
         val source = if (externalDevices.remove(deviceId)) PhysicalSource.HID else PhysicalSource.BUILT_IN
         emit(inputController.cancelSource(source, deviceId, SystemClock.uptimeMillis()))
-        val qualificationCancelled = hidQualificationCapture
-            ?.cancelSource(source, deviceId, SystemClock.uptimeMillis()) == true
         if (source == PhysicalSource.HID && qualificationSession?.snapshot?.phase == QualificationPhase.AWAITING_CONFIRMATION) {
             qualificationSession?.cancelAttempt()
             publishQualificationMutation("disconnect")
         }
+        if (source == PhysicalSource.HID && glasseoApplication.hidQualificationFlow != null) {
+            glasseoApplication.hidQualificationFlow?.cancelCapture("disconnect")
+            postHidQualificationState("disconnect")
+        }
         scheduleDeadline()
         trace(
             "input-device-removed",
-            "deviceId=$deviceId source=$source qualificationCancelled=$qualificationCancelled",
+            "deviceId=$deviceId source=$source",
         )
     }
 
@@ -293,11 +330,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                     ProbeState.record(it)
                     when (it) {
                         BridgeMessage.Hello -> {
-                            postQualificationState("web-ready")
+                            postActiveQualificationState("web-ready")
                             postHidInputTrace()
                         }
                         is BridgeMessage.QualificationStart -> if (captureInput) startQualification(it.mode)
                         is BridgeMessage.QualificationRendered -> acknowledgeQualificationRender(it)
+                        is BridgeMessage.HidQualificationRendered -> acknowledgeHidQualificationRender(it)
                         else -> Unit
                     }
                     val detail = if (it is BridgeMessage.ProbeResult) {
@@ -313,6 +351,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 webReady = false
                 qualificationSession?.suspendCapture()
+                glasseoApplication.hidQualificationFlow?.suspendCapture()
                 trace("page-started", "trusted=${OriginPolicy.allowsMainFrame(url)}")
             }
 
@@ -337,9 +376,11 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                             .onSuccess(::restoreQualification)
                             .onFailure { clearQualificationCheckpoint() }
                     }
-                    if (qualificationSession == null) {
+                    if (qualificationSession == null && glasseoApplication.hidQualificationFlow == null) {
                         postNative(NativeQualificationMessage.landing())
                         glasseoApplication.correlateWizardStep(null)
+                    } else if (glasseoApplication.hidQualificationFlow != null) {
+                        postHidQualificationState("page-finished")
                     } else {
                         prepareQualificationStep()
                         postQualificationState("page-finished")
@@ -367,7 +408,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private fun handleKey(event: KeyEvent, source: PhysicalSource, control: SemanticControl): Boolean {
         val action = when (event.action) {
             KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) PhysicalAction.DOWN else PhysicalAction.REPEAT
-            KeyEvent.ACTION_UP -> PhysicalAction.UP
+            KeyEvent.ACTION_UP -> if (event.isCanceled) PhysicalAction.CANCEL else PhysicalAction.UP
             else -> return false
         }
         emit(
@@ -381,99 +422,58 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun startQualification(mode: QualificationMode) {
         clearQualificationCheckpoint()
-        if (mode == QualificationMode.HID) glasseoApplication.hidInputTrace.clear()
+        if (mode == QualificationMode.HID) {
+            val peripheral = selectedHidPeripheral()
+            if (peripheral == null) {
+                trace("hid-qualification-start-rejected", "no-connected-external-HID")
+                return
+            }
+            glasseoApplication.hidInputTrace.clear()
+            glasseoApplication.startHidQualification(peripheral)
+            trace("hid-qualification-start", "peripheral=$peripheral")
+            postHidQualificationState("start")
+            postHidInputTrace()
+            return
+        }
         glasseoApplication.startQualification(mode, pauseAt = qualificationPauseTarget)
-        hidQualificationCapture = if (mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
         publishQualificationMutation("start")
         postHidInputTrace()
         trace("qualification-start", "mode=$mode")
     }
 
+    private fun selectedHidPeripheral(): HidPeripheralIdentity? {
+        val candidates = inputManager.inputDeviceIds.asSequence().mapNotNull(inputManager::getInputDevice)
+            .filter { it.isExternal && !it.isVirtual }
+        val selected = candidates.firstOrNull { it.vendorId == 1406 && it.productId == 8199 }
+            ?: candidates.singleOrNull()
+        return selected?.let { HidPeripheralIdentity(it.descriptor, it.vendorId, it.productId, it.sources) }
+    }
+
     private fun restoreQualification(checkpoint: QualificationCheckpoint) {
+        if (checkpoint.mode == QualificationMode.HID) {
+            clearQualificationCheckpoint()
+            trace("qualification-restore-rejected", "legacy-HID-checkpoint")
+            return
+        }
         glasseoApplication.restoreQualification(checkpoint, qualificationPauseTarget)
-        hidQualificationCapture = if (checkpoint.mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
         publishQualificationMutation("restore")
         trace("qualification-resume", "mode=${checkpoint.mode} step=${checkpoint.step}")
     }
 
-    private fun handleHidQualification(event: KeyEvent) {
-        val action = event.physicalAction() ?: return
-        handleHidQualification(
-            HidRawInput(
-                action,
-                event.hidIdentity(),
-                event.deviceId,
-                event.repeatCount,
-                event.eventTime,
-                SystemClock.elapsedRealtime(),
-                event.source,
-            ),
-        )
-    }
-
-    private fun handleHidQualification(input: HidRawInput) {
-        val session = qualificationSession ?: return
-        if (session.snapshot.complete) return
-        val owner = PhysicalOwner(PhysicalSource.HID, input.deviceId, input.identity.keyCode)
-        val result = if (session.armed) {
-            hidQualificationCapture?.handleDetailed(
-                owner,
-                input.identity,
-                session.wizard.currentStep.control,
-                input.action,
-                input.eventTimeMillis,
-            ) ?: HidCaptureResult(reason = "rejected:capture-unavailable")
-        } else {
-            val reason = "rejected:capture-disarmed step=${session.snapshot.step} " +
-                "phase=${session.snapshot.phase} revision=${session.snapshot.revision}"
-            traceQualificationIgnored(session, "hid-${input.action}")
-            HidCaptureResult(reason = reason)
-        }
-        val diagnostic = glasseoApplication.hidInputTrace.record(input, result.reason)
+    private fun handleHidQualificationFlow(input: HidRawInput, rawSequence: Long) {
+        val flow = glasseoApplication.hidQualificationFlow ?: return
+        val result = flow.handle(input)
+        glasseoApplication.hidInputTrace.recordDecision(rawSequence, result.reason)
         trace(
-            "qualification-hid-input",
-            "sequence=${diagnostic.sequence} action=${input.action} keyCode=${input.identity.keyCode} " +
-                "scanCode=${input.identity.scanCode} repeat=${input.repeatCount} " +
-                "eventTime=${input.eventTimeMillis} elapsed=${input.receivedElapsedRealtimeMillis} " +
-                "eventSource=${input.eventSource} deviceId=${input.deviceId} descriptor=${input.identity.descriptor} " +
-                "vendor=${input.identity.vendorId} product=${input.identity.productId} " +
-                "sources=${input.identity.sources} duration=${diagnostic.pressDurationMillis} " +
-                "gap=${diagnostic.releaseToNextDownMillis} reason=${diagnostic.reason}",
+            "hid-input-decision",
+            "sequence=$rawSequence reason=${result.reason} sessionId=${flow.snapshot.sessionId} " +
+                "revision=${flow.snapshot.revision} stage=${flow.snapshot.stage} " +
+                "step=${flow.snapshot.stepIndex} phase=${flow.snapshot.phase}",
         )
         postHidInputTrace()
-        if (session.armed) scheduleDeadline()
-        val operation = result.operation
-        if (operation != null) {
-            when (val admission = session.capture(operation)) {
-                is CaptureAdmission.Accepted -> {
-                    pendingHidFinalizer = PendingHidFinalizer(admission.token, operation)
-                    trace(
-                        "qualification-hid-captured",
-                        "step=${session.wizard.currentStep} signature=${operation.signature} " +
-                            "presses=${operation.hidPresses}",
-                    )
-                    publishQualificationMutation("hid-captured")
-                    handler.postAtTime(finishHidCapture, checkNotNull(session.snapshot.settleDeadlineMillis))
-                }
-                is CaptureAdmission.Ignored -> traceQualificationIgnored(session, admission.reason)
-            }
-        }
-    }
-
-    private fun finalizeHidAttempt() {
-        val session = qualificationSession ?: return
-        val pending = pendingHidFinalizer ?: return
-        pendingHidFinalizer = null
-        val previousStep = session.wizard.currentStep
-        if (!session.finalize(pending.token)) return traceQualificationIgnored(session, "stale-finalizer")
-        trace(
-            "qualification-operation",
-            "step=$previousStep signature=${pending.operation.signature} presses=${pending.operation.hidPresses}",
-        )
-        publishQualificationMutation("hid-finalized")
-        if (session.snapshot.complete || session.wizard.currentStep != previousStep) prepareQualificationStep()
+        if (result.snapshotChanged) postHidQualificationState("input-complete")
     }
 
     private fun recordBuiltInKey(event: KeyEvent) {
@@ -586,32 +586,21 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (session.snapshot.complete) {
             glasseoApplication.correlateWizardStep(null)
             clearQualificationCheckpoint()
-            if (session.mode == QualificationMode.HID) {
-                val result = wizard.hidResult()
-                trace(
-                    "qualification-hid-result",
-                    "passes=${result?.passes} peripheral=${result?.peripheral} " +
-                        "bindings=${result?.bindings} operations=${result?.operations}",
-                )
-            } else {
-                trace(
-                    "qualification-matrix",
-                    "operations=${wizard.results} capabilities=${deriveCapabilities(wizard.results)}",
-                )
-            }
+            trace(
+                "qualification-matrix",
+                "operations=${wizard.results} capabilities=${deriveCapabilities(wizard.results)}",
+            )
             return
         }
         glasseoApplication.correlateWizardStep(wizard.currentStep)
-        if (session.mode == QualificationMode.BUILT_IN) {
-            nonOrderedBroadcastObservation.begin(
-                wizard.currentStep,
-                qualificationNonOrderedBroadcastActions(wizard.currentStep),
-            )
-            if (wizard.currentStep == QualificationStep.LONG_COMMAND) {
-                saveQualificationCheckpoint(wizard.checkpoint())
-            } else {
-                clearQualificationCheckpoint()
-            }
+        nonOrderedBroadcastObservation.begin(
+            wizard.currentStep,
+            qualificationNonOrderedBroadcastActions(wizard.currentStep),
+        )
+        if (wizard.currentStep == QualificationStep.LONG_COMMAND) {
+            saveQualificationCheckpoint(wizard.checkpoint())
+        } else {
+            clearQualificationCheckpoint()
         }
     }
 
@@ -654,10 +643,44 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         postNative(NativeQualificationMessage.state(snapshot))
     }
 
+    private fun postActiveQualificationState(reason: String) {
+        if (glasseoApplication.hidQualificationFlow != null) postHidQualificationState(reason)
+        else postQualificationState(reason)
+    }
+
+    private fun postHidQualificationState(reason: String) {
+        val snapshot = glasseoApplication.hidQualificationFlow?.snapshot ?: return
+        if (!webReady) return
+        trace(
+            "hid-qualification-state-sent",
+            "reason=$reason sessionId=${snapshot.sessionId} revision=${snapshot.revision} " +
+                "stage=${snapshot.stage} step=${snapshot.stepIndex} phase=${snapshot.phase}",
+        )
+        postNative(NativeQualificationMessage.hidState(snapshot))
+    }
+
     private fun postHidInputTrace() {
-        val session = qualificationSession ?: return
-        if (session.mode != QualificationMode.HID) return
+        if (glasseoApplication.hidQualificationFlow == null) return
         postNative(NativeQualificationMessage.hidInputTrace(glasseoApplication.hidInputTrace.snapshot()))
+    }
+
+    private fun acknowledgeHidQualificationRender(message: BridgeMessage.HidQualificationRendered) {
+        val flow = glasseoApplication.hidQualificationFlow ?: return
+        val result = flow.acknowledge(
+            HidQualificationRenderAck(
+                message.sessionId,
+                message.revision,
+                message.stage,
+                message.stepIndex,
+                message.phase,
+            ),
+        )
+        trace(
+            "hid-qualification-state-acked",
+            "sessionId=${message.sessionId} revision=${message.revision} stage=${message.stage} " +
+                "step=${message.stepIndex} phase=${message.phase} accepted=${result.accepted} armed=${result.armed}",
+        )
+        if (result.snapshotChanged) postHidQualificationState("render-transition")
     }
 
     private fun acknowledgeQualificationRender(message: BridgeMessage.QualificationRendered) {
@@ -697,8 +720,77 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun KeyEvent.physicalAction(): PhysicalAction? = when (action) {
         KeyEvent.ACTION_DOWN -> if (repeatCount == 0) PhysicalAction.DOWN else PhysicalAction.REPEAT
-        KeyEvent.ACTION_UP -> PhysicalAction.UP
+        KeyEvent.ACTION_UP -> if (isCanceled) PhysicalAction.CANCEL else PhysicalAction.UP
         else -> null
+    }
+
+    private fun recordHidAtDispatchEntry(event: KeyEvent): Pair<HidRawInput, HidRawReceipt>? {
+        val action = event.physicalAction() ?: return null
+        val input = HidRawInput(
+            action,
+            event.hidIdentity(),
+            event.deviceId,
+            event.repeatCount,
+            event.eventTime,
+            SystemClock.elapsedRealtime(),
+            event.source,
+        )
+        val receipt = glasseoApplication.hidInputTrace.recordRaw(input)
+        traceHidRawReceipt(receipt)
+        postHidInputTrace()
+        return input to receipt
+    }
+
+    private fun recordHidDecision(sequence: Long, reason: String) {
+        glasseoApplication.hidInputTrace.recordDecision(sequence, reason)
+        trace("hid-input-decision", "sequence=$sequence reason=$reason")
+        postHidInputTrace()
+    }
+
+    private fun traceHidRawReceipt(receipt: HidRawReceipt) {
+        trace(
+            "hid-raw-receipt",
+            "sequence=${receipt.sequence} action=${receipt.action} keyCode=${receipt.identity.keyCode} " +
+                "scanCode=${receipt.identity.scanCode} repeat=${receipt.repeatCount} " +
+                "eventTime=${receipt.eventTimeMillis} elapsed=${receipt.receivedElapsedRealtimeMillis} " +
+                "eventSource=${receipt.eventSource} deviceId=${receipt.deviceId} " +
+                "descriptor=${receipt.identity.descriptor} vendor=${receipt.identity.vendorId} " +
+                "product=${receipt.identity.productId} sources=${receipt.identity.sources}",
+        )
+    }
+
+    private fun startHidAttemptMarker(
+        attemptId: String,
+        operation: QualificationStep,
+        phase: HidQualificationPhase,
+        supervisorElapsedRealtimeMillis: Long,
+    ) {
+        val now = SystemClock.elapsedRealtime()
+        val flow = checkNotNull(glasseoApplication.hidQualificationFlow) { "HID qualification is not active" }
+        val marker = glasseoApplication.hidInputTrace.startAttempt(
+            attemptId,
+            operation,
+            phase,
+            flow.expectedPeripheral,
+            flow.bindings.identityFor(operation.control),
+            supervisorElapsedRealtimeMillis,
+            now,
+            HID_ATTEMPT_WATCHDOG_MILLIS,
+        )
+        trace(
+            "hid-attempt-marker",
+            "attemptId=${marker.attemptId} operation=${marker.operation} phase=${marker.phase} " +
+                "peripheral=${marker.expectedPeripheral} identity=${marker.expectedIdentity} " +
+                "supervisor=${marker.supervisorElapsedRealtimeMillis} started=${marker.startedElapsedRealtimeMillis} " +
+                "deadline=${marker.watchdogDeadlineMillis}",
+        )
+        postHidInputTrace()
+        hidAttemptWatchdog?.let(handler::removeCallbacks)
+        hidAttemptWatchdog = Runnable {
+            val expired = glasseoApplication.hidInputTrace.expireAttempt(attemptId, SystemClock.elapsedRealtime())
+            trace("hid-attempt-watchdog", "attemptId=$attemptId status=${expired?.status}")
+            postHidInputTrace()
+        }.also { handler.postAtTime(it, marker.watchdogDeadlineMillis) }
     }
 
     private fun emit(events: List<SemanticInteraction>) {
@@ -710,16 +802,25 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     internal fun emitForTest(event: SemanticInteraction) = emit(listOf(event))
 
-    internal fun startQualificationForTest(
-        step: QualificationStep,
-        mode: QualificationMode = QualificationMode.BUILT_IN,
-    ) {
+    internal fun startQualificationForTest(step: QualificationStep) {
         clearQualificationCheckpoint()
-        if (mode == QualificationMode.HID) glasseoApplication.hidInputTrace.clear()
-        glasseoApplication.startQualification(mode, step.ordinal, qualificationPauseTarget)
-        hidQualificationCapture = if (mode == QualificationMode.HID) HidQualificationCapture() else null
+        glasseoApplication.startQualification(QualificationMode.BUILT_IN, step.ordinal, qualificationPauseTarget)
         prepareQualificationStep()
         publishQualificationMutation("test-start")
+    }
+
+    internal fun startHidQualificationForTest(peripheral: HidPeripheralIdentity) {
+        glasseoApplication.hidInputTrace.clear()
+        glasseoApplication.startHidQualification(peripheral)
+        postHidQualificationState("test-start")
+        postHidInputTrace()
+    }
+
+    internal fun submitHidInputForTest(input: HidRawInput) {
+        val receipt = glasseoApplication.hidInputTrace.recordRaw(input)
+        traceHidRawReceipt(receipt)
+        postHidInputTrace()
+        handleHidQualificationFlow(input, receipt.sequence)
     }
 
     internal fun submitQualificationForTest(operation: QualificationOperation): Boolean {
@@ -737,24 +838,9 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         return true
     }
 
-    internal fun submitHidPhysicalForTest(
-        owner: PhysicalOwner,
-        identity: HidPhysicalIdentity,
-        action: PhysicalAction,
-        timeMillis: Long,
-    ) = handleHidQualification(
-        HidRawInput(
-            action,
-            identity,
-            owner.deviceId,
-            if (action == PhysicalAction.REPEAT) 1 else 0,
-            timeMillis,
-            SystemClock.elapsedRealtime(),
-        ),
-    )
-
     internal fun reloadQualificationForTest() {
         qualificationSession?.suspendCapture()
+        glasseoApplication.hidQualificationFlow?.suspendCapture()
         webView.reload()
     }
 
@@ -782,22 +868,27 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun scheduleDeadline() {
         handler.removeCallbacks(longPressCheck)
-        listOfNotNull(inputController.nextDeadlineMillis, hidQualificationCapture?.nextDeadlineMillis)
-            .minOrNull()
-            ?.let { handler.postAtTime(longPressCheck, it) }
+        inputController.nextDeadlineMillis?.let { handler.postAtTime(longPressCheck, it) }
     }
 
     private fun cancelInputs(reason: String) {
         if (!::inputController.isInitialized) return
         val now = SystemClock.uptimeMillis()
         emit(inputController.cancelAll(now))
-        hidQualificationCapture?.cancelAll(now)
         val session = qualificationSession
         if (session != null) {
             if (builtInCapture != null || session.hasPendingOperation) {
                 cancelQualificationAttempt(reason)
             } else {
                 session.suspendCapture()
+            }
+        }
+        glasseoApplication.hidQualificationFlow?.let {
+            if (it.hasPendingInput) {
+                it.cancelCapture(reason)
+                postHidQualificationState("cancel-$reason")
+            } else {
+                it.suspendCapture()
             }
         }
         handler.removeCallbacks(longPressCheck)
@@ -819,10 +910,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private fun cancelQualificationAttempt(reason: String) {
         val session = qualificationSession ?: return
         handler.removeCallbacks(finishBuiltInCapture)
-        handler.removeCallbacks(finishHidCapture)
         builtInCapture = null
         builtInFinalizerToken = null
-        pendingHidFinalizer = null
         session.cancelAttempt()
         publishQualificationMutation("cancel-$reason")
     }
@@ -886,6 +975,12 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         const val QUALIFICATION_PAUSE_STEP_EXTRA = "qualification_pause_at_step"
         const val QUALIFICATION_PAUSE_PHASE_EXTRA = "qualification_pause_at_phase"
         const val QUALIFICATION_RESUME_EXTRA = "qualification_resume"
+        const val HID_ATTEMPT_ACTION = "com.code2hack.glasseo.DEBUG_HID_ATTEMPT"
+        const val HID_ATTEMPT_ID_EXTRA = "attemptId"
+        const val HID_ATTEMPT_OPERATION_EXTRA = "operation"
+        const val HID_ATTEMPT_PHASE_EXTRA = "phase"
+        const val HID_ATTEMPT_SUPERVISOR_TIME_EXTRA = "supervisorElapsedRealtimeMillis"
+        const val HID_ATTEMPT_WATCHDOG_MILLIS = 1_500L
         private const val QUALIFICATION_PREFS = "debug-input-qualification"
         private const val QUALIFICATION_CHECKPOINT = "long-command-checkpoint"
     }

@@ -17,6 +17,9 @@ object ProbeState {
     private val qualificationRenderHistory = mutableListOf<BridgeMessage.QualificationRendered>()
     val qualificationRenders: List<BridgeMessage.QualificationRendered>
         @Synchronized get() = qualificationRenderHistory.toList()
+    private val hidQualificationRenderHistory = mutableListOf<BridgeMessage.HidQualificationRendered>()
+    val hidQualificationRenders: List<BridgeMessage.HidQualificationRendered>
+        @Synchronized get() = hidQualificationRenderHistory.toList()
     private var latch = CountDownLatch(1)
     private var semanticLatch = CountDownLatch(1)
 
@@ -27,6 +30,7 @@ object ProbeState {
         rendererGone = 0
         semanticReceipt = null
         qualificationRenderHistory.clear()
+        hidQualificationRenderHistory.clear()
         latch = CountDownLatch(1)
         semanticLatch = CountDownLatch(1)
     }
@@ -44,6 +48,7 @@ object ProbeState {
             }
             is BridgeMessage.QualificationStart -> Unit
             is BridgeMessage.QualificationRendered -> qualificationRenderHistory += message
+            is BridgeMessage.HidQualificationRendered -> hidQualificationRenderHistory += message
         }
     }
 

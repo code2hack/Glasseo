@@ -96,7 +96,7 @@ class QualificationWizardTest {
         assertEquals(7, wizard.bindings.size)
         val result = wizard.hidResult()
         assertNotNull(result)
-        assertTrue(result!!.passes)
+        assertFalse(result!!.passes)
         assertEquals(primary.peripheral, result.peripheral)
         assertEquals(SemanticControl.entries.toSet(), result.bindings.keys)
         assertEquals(7, result.bindings.values.toSet().size)

@@ -32,6 +32,14 @@ export type NativeMessage =
         | "SETTLING_SECOND"
         | "STEP_CONFIRMED";
     }
+  | {
+      type: "hid-qualification-rendered";
+      sessionId: string;
+      revision: number;
+      stage: "BINDING" | "RECOGNITION" | "COMPLETE";
+      stepIndex: number;
+      phase: "AWAITING_INPUT" | "STEP_CONFIRMED" | "COMPLETE";
+    }
   | ProbeResult
   | {
       type: "semantic-received";
@@ -79,6 +87,23 @@ export function decodeNativeMessage(value: string): NativeMessage {
       "SETTLING_SECOND",
       "STEP_CONFIRMED",
     ].includes(message.phase as string)
+  ) {
+    return message as NativeMessage;
+  }
+  if (
+    message.type === "hid-qualification-rendered" &&
+    Object.keys(message).length === 6 &&
+    typeof message.sessionId === "string" &&
+    message.sessionId.length > 0 &&
+    Number.isSafeInteger(message.revision) &&
+    (message.revision as number) > 0 &&
+    ["BINDING", "RECOGNITION", "COMPLETE"].includes(message.stage as string) &&
+    Number.isSafeInteger(message.stepIndex) &&
+    (message.stepIndex as number) >= 0 &&
+    (message.stepIndex as number) <= 10 &&
+    ["AWAITING_INPUT", "STEP_CONFIRMED", "COMPLETE"].includes(
+      message.phase as string,
+    )
   ) {
     return message as NativeMessage;
   }

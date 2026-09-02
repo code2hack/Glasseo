@@ -2,7 +2,7 @@ import { postNative } from "./native/bridge";
 import {
   formatHidInputTrace,
   listenForHidInputTrace,
-  type HidInputTraceEntry,
+  type HidInputTrace,
 } from "./native/hidInputTrace";
 import {
   listenForQualification,
@@ -19,7 +19,7 @@ const content = document.querySelector<HTMLElement>("main");
 
 function renderQualification(
   state: QualificationState,
-  hidInputTrace: HidInputTraceEntry[],
+  hidInputTrace: HidInputTrace,
 ) {
   if (!content) return;
   content.replaceChildren();
@@ -61,18 +61,37 @@ function renderQualification(
   if (state.mode === "HID") {
     const traceHeading = document.createElement("p");
     traceHeading.className = "hid-input-trace-heading";
-    traceHeading.textContent = "Raw HID input";
+    traceHeading.textContent =
+      `Raw HID input — receipts=${hidInputTrace.totalRawReceipts} ` +
+      `decisions=${hidInputTrace.totalDecisions} dropped=${hidInputTrace.droppedRecords}`;
     const trace = document.createElement("output");
     trace.className = "hid-input-trace";
     trace.setAttribute("aria-live", "polite");
     trace.textContent =
-      formatHidInputTrace(hidInputTrace) || "No HID input received";
+      formatHidInputTrace(hidInputTrace.events) || "No HID input received";
     content.append(traceHeading, trace);
+    if (hidInputTrace.attempt) {
+      const attempt = document.createElement("output");
+      attempt.className = "hid-attempt-marker";
+      attempt.textContent =
+        `Attempt ${hidInputTrace.attempt.attemptId} ${hidInputTrace.attempt.operation} ` +
+        `${hidInputTrace.attempt.phase}: ${hidInputTrace.attempt.status} ` +
+        `supervisor=${hidInputTrace.attempt.supervisorElapsedRealtimeMillis} ` +
+        `received=${hidInputTrace.attempt.startedElapsedRealtimeMillis}`;
+      content.append(attempt);
+    }
   }
 }
 
 let qualification: QualificationState = { view: "landing" };
-let hidInputTrace: HidInputTraceEntry[] = [];
+let hidInputTrace: HidInputTrace = {
+  type: "hid-input-trace",
+  events: [],
+  totalRawReceipts: 0,
+  totalDecisions: 0,
+  droppedRecords: 0,
+  attempt: null,
+};
 
 async function main() {
   listenForQualification((message) => {
@@ -95,10 +114,23 @@ async function main() {
         stepIndex: message.stepIndex,
         phase: message.phase,
       });
+    } else if (
+      message.type === "hid-qualification-state" &&
+      qualification.sessionId === message.sessionId &&
+      qualification.revision === message.revision
+    ) {
+      postNative({
+        type: "hid-qualification-rendered",
+        sessionId: message.sessionId,
+        revision: message.revision,
+        stage: message.stage,
+        stepIndex: message.stepIndex,
+        phase: message.phase,
+      });
     }
   });
   listenForHidInputTrace((message) => {
-    hidInputTrace = message.events;
+    hidInputTrace = message;
     renderQualification(qualification, hidInputTrace);
   });
   listenForSemanticInput((input) =>

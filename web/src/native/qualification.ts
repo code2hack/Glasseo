@@ -24,8 +24,10 @@ export type QualificationState = {
   sessionId?: string;
   revision?: number;
   stepIndex?: number;
+  stepCount?: number;
   stepName?: string;
-  phase?: QualificationPhase;
+  stage?: HidQualificationStage;
+  phase?: QualificationPhase | HidQualificationPhase;
   attempt?: number;
   operationId?: number | null;
   candidateDisplay?: string | null;
@@ -44,6 +46,12 @@ export type QualificationPhase =
   | "AWAITING_CONFIRMATION"
   | "SETTLING_SECOND"
   | "STEP_CONFIRMED";
+
+export type HidQualificationStage = "BINDING" | "RECOGNITION" | "COMPLETE";
+export type HidQualificationPhase =
+  | "AWAITING_INPUT"
+  | "STEP_CONFIRMED"
+  | "COMPLETE";
 
 export type SuppressionResult = "NOT_NEEDED" | "SUCCEEDED" | "FAILED";
 
@@ -71,8 +79,26 @@ export type QualificationSnapshot = Omit<
 };
 
 export type QualificationAction =
-  | { type: "native-state"; snapshot: QualificationSnapshot }
+  | {
+      type: "native-state";
+      snapshot: QualificationSnapshot | HidQualificationSnapshot;
+    }
   | { type: "landing" };
+
+export type HidQualificationSnapshot = {
+  type: "hid-qualification-state";
+  sessionId: string;
+  revision: number;
+  stage: HidQualificationStage;
+  stepIndex: number;
+  stepCount: 7 | 10;
+  stepName: string;
+  phase: HidQualificationPhase;
+  prompt: string;
+  error: string | null;
+  settleDeadlineMillis: null;
+  complete: boolean;
+};
 
 export function reduceQualification(
   state: QualificationState,
@@ -95,21 +121,26 @@ export function reduceQualification(
   return {
     view: "wizard",
     ...snapshot,
+    mode: snapshot.type === "hid-qualification-state" ? "HID" : snapshot.mode,
   };
 }
 
 export function qualificationHeading(
-  state: Pick<QualificationState, "complete" | "stepIndex" | "stepName">,
+  state: Pick<
+    QualificationState,
+    "complete" | "stepIndex" | "stepCount" | "stepName"
+  >,
 ): string {
   if (state.complete) return "Qualification complete";
   return state.stepIndex !== undefined && state.stepName
-    ? `${state.stepIndex + 1}/10 ${state.stepName}`
+    ? `${state.stepIndex + 1}/${state.stepCount ?? 10} ${state.stepName}`
     : "Input qualification";
 }
 
 export type NativeQualificationMessage =
   | { type: "qualification-landing" }
-  | QualificationSnapshot;
+  | QualificationSnapshot
+  | HidQualificationSnapshot;
 
 export function decodeQualificationMessage(
   value: unknown,
@@ -118,6 +149,35 @@ export function decodeQualificationMessage(
   if (!parsed || typeof parsed !== "object")
     throw new Error("Invalid qualification message");
   const message = parsed as Record<string, unknown>;
+  if (
+    message.type === "hid-qualification-state" &&
+    Object.keys(message).length === 12 &&
+    typeof message.sessionId === "string" &&
+    message.sessionId.length > 0 &&
+    Number.isSafeInteger(message.revision) &&
+    (message.revision as number) > 0 &&
+    isHidStage(message.stage) &&
+    Number.isSafeInteger(message.stepIndex) &&
+    (message.stepIndex as number) >= 0 &&
+    ((message.stage === "BINDING" &&
+      message.stepCount === 7 &&
+      (message.stepIndex as number) < 7) ||
+      (message.stage === "RECOGNITION" &&
+        message.stepCount === 10 &&
+        (message.stepIndex as number) < 10) ||
+      (message.stage === "COMPLETE" &&
+        message.stepCount === 10 &&
+        message.stepIndex === 10)) &&
+    typeof message.stepName === "string" &&
+    isHidPhase(message.phase) &&
+    typeof message.prompt === "string" &&
+    (message.error === null || typeof message.error === "string") &&
+    message.settleDeadlineMillis === null &&
+    typeof message.complete === "boolean" &&
+    message.complete === (message.stage === "COMPLETE")
+  ) {
+    return message as HidQualificationSnapshot;
+  }
   if (
     message.type === "qualification-landing" &&
     Object.keys(message).length === 1
@@ -160,6 +220,18 @@ export function decodeQualificationMessage(
     return message as NativeQualificationMessage;
   }
   throw new Error("Unknown or malformed qualification message");
+}
+
+function isHidStage(value: unknown): value is HidQualificationStage {
+  return value === "BINDING" || value === "RECOGNITION" || value === "COMPLETE";
+}
+
+function isHidPhase(value: unknown): value is HidQualificationPhase {
+  return (
+    value === "AWAITING_INPUT" ||
+    value === "STEP_CONFIRMED" ||
+    value === "COMPLETE"
+  );
 }
 
 function isPhase(value: unknown): value is QualificationPhase {

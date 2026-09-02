@@ -2,6 +2,8 @@ package com.code2hack.glasseo
 
 import android.content.Intent
 import android.util.DisplayMetrics
+import android.view.InputDevice
+import android.view.KeyEvent
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -218,231 +220,217 @@ class WebViewQualificationTest {
             .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
         ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
             assertNotNull(ProbeState.await(60))
-            scenario.onActivity {
-                it.startQualificationForTest(QualificationStep.SHORT_PRIMARY, QualificationMode.HID)
-            }
-            val ready = awaitState(
-                scenario,
-                QualificationStep.SHORT_PRIMARY,
-                QualificationPhase.AWAITING_FIRST,
-                armed = true,
-            )
-            val owner = PhysicalOwner(PhysicalSource.HID, 90, 61)
             val identity = hidIdentity(1)
+            scenario.onActivity { it.startHidQualificationForTest(identity.peripheral) }
+            val ready = awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true)
             val downAt = android.os.SystemClock.uptimeMillis()
             scenario.onActivity {
-                it.submitHidPhysicalForTest(
-                    owner,
-                    identity,
-                    PhysicalAction.DOWN,
-                    downAt,
+                it.submitHidInputForTest(
+                    HidRawInput(PhysicalAction.DOWN, identity, 90, 0, downAt, downAt),
                 )
                 it.onWindowFocusChanged(false)
-                assertFalse((it.application as GlasseoApplication).qualificationSession!!.armed)
+                assertFalse((it.application as GlasseoApplication).hidQualificationFlow!!.isArmed)
             }
 
-            scenario.onActivity {
-                it.onWindowFocusChanged(true)
-            }
-
-            val rearmed = awaitState(
-                scenario,
-                QualificationStep.SHORT_PRIMARY,
-                QualificationPhase.AWAITING_FIRST,
-                armed = true,
-            )
+            scenario.onActivity { it.onWindowFocusChanged(true) }
+            val rearmed = awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true)
             assertEquals(ready.sessionId, rearmed.sessionId)
-            assertEquals(ready.revision, rearmed.revision)
+            assertTrue(rearmed.revision > ready.revision)
 
             scenario.onActivity {
-                it.submitHidPhysicalForTest(
-                    owner,
-                    identity,
-                    PhysicalAction.UP,
-                    downAt + 100,
+                it.submitHidInputForTest(
+                    HidRawInput(PhysicalAction.UP, identity, 90, 0, downAt + 100, downAt + 100),
                 )
             }
             assertEquals(
                 rearmed.revision,
-                awaitState(
-                    scenario,
-                    QualificationStep.SHORT_PRIMARY,
-                    QualificationPhase.AWAITING_FIRST,
-                    armed = true,
-                ).revision,
+                awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true).revision,
             )
 
             val freshDownAt = downAt + 200
-            scenario.onActivity {
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.DOWN, freshDownAt)
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.UP, freshDownAt + 100)
-            }
-            awaitState(
-                scenario,
-                QualificationStep.SHORT_PRIMARY,
-                QualificationPhase.SETTLING_FIRST,
-                armed = false,
-            )
+            submitHidCycle(scenario, identity, freshDownAt, 100)
+            awaitHidState(scenario, HidQualificationStage.BINDING, 1, armed = true)
         }
     }
 
-    @Test fun physicalSecondaryDoubleKeepsRawDecisionTraceVisibleAcrossPhaseChange() {
+    @Test fun physicalSecondaryDoubleSurvivesReloadAndCancelsVisiblyOnRecreation() {
         val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
         ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
             assertNotNull(ProbeState.await(60))
-            lateinit var identity: HidPhysicalIdentity
-            scenario.onActivity {
-                val bindings = (it.application as GlasseoApplication).hidBindings
-                identity = bindings.identityFor(SemanticControl.SECONDARY) ?: hidIdentity(2).also { candidate ->
-                    assertTrue(bindings.bind(SemanticControl.SECONDARY, candidate))
+            val identities = (1..7).map(::hidIdentity)
+            scenario.onActivity { it.startHidQualificationForTest(identities.first().peripheral) }
+            var time = android.os.SystemClock.uptimeMillis()
+            identities.forEachIndexed { index, identity ->
+                awaitHidState(scenario, HidQualificationStage.BINDING, index, armed = true)
+                submitHidCycle(scenario, identity, time, 20)
+                time += 1_000
+            }
+            listOf(identities[0] to 20L, identities[0] to 700L, identities[1] to 700L)
+                .forEachIndexed { index, (identity, duration) ->
+                    awaitHidState(scenario, HidQualificationStage.RECOGNITION, index, armed = true)
+                    submitHidCycle(scenario, identity, time, duration)
+                    time += 1_000
                 }
-                it.startQualificationForTest(QualificationStep.DOUBLE_SECONDARY, QualificationMode.HID)
-            }
-            awaitState(
-                scenario,
-                QualificationStep.DOUBLE_SECONDARY,
-                QualificationPhase.AWAITING_FIRST,
-                armed = true,
-            )
-            val owner = PhysicalOwner(PhysicalSource.HID, 90, identity.keyCode)
-            val downAt = android.os.SystemClock.uptimeMillis()
+
+            val before = awaitHidState(scenario, HidQualificationStage.RECOGNITION, 3, armed = true)
+            submitHidCycle(scenario, identities[1], time, 20)
+            val pending = awaitHidState(scenario, HidQualificationStage.RECOGNITION, 3, armed = true)
+            assertEquals(before.revision, pending.revision)
+            assertTrue(awaitHidTrace(scenario, "waiting for second cycle").contains("UP keyCode=${identities[1].keyCode}"))
+
+            scenario.onActivity { it.reloadQualificationForTest() }
+            val reloaded = awaitHidState(scenario, HidQualificationStage.RECOGNITION, 3, armed = true)
+            assertEquals(pending.revision, reloaded.revision)
             scenario.onActivity {
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.DOWN, downAt)
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.UP, downAt + 100)
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.DOWN, downAt + 380)
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.UP, downAt + 520)
-            }
-            val settling = awaitState(
-                scenario,
-                QualificationStep.DOUBLE_SECONDARY,
-                QualificationPhase.SETTLING_FIRST,
-                armed = false,
-            )
-            scenario.onActivity {
-                it.submitHidPhysicalForTest(owner, identity, PhysicalAction.REPEAT, downAt + 600)
-                assertEquals(settling.revision, (it.application as GlasseoApplication).qualificationSession!!.snapshot.revision)
+                assertTrue((it.application as GlasseoApplication).hidQualificationFlow!!.hasPendingInput)
             }
 
-            val trace = awaitHidTrace(scenario, "rejected:capture-disarmed")
-            assertTrue(trace.contains("DOWN keyCode=${identity.keyCode} scanCode=${identity.scanCode}"))
-            assertTrue(trace.contains("UP keyCode=${identity.keyCode} scanCode=${identity.scanCode}"))
-            assertTrue(trace.contains("gap=280 reason=secondary-down:confirmation gap=280ms"))
-            assertTrue(trace.contains("repeatCount=1"))
+            scenario.recreate()
+            val recreated = awaitHidState(scenario, HidQualificationStage.RECOGNITION, 3, armed = true)
+            assertTrue(recreated.revision > reloaded.revision)
+            assertEquals("Input cancelled: pause", recreated.error)
 
-            awaitState(
-                scenario,
-                QualificationStep.DOUBLE_SECONDARY,
-                QualificationPhase.AWAITING_CONFIRMATION,
-                armed = true,
+            submitHidCycle(scenario, identities[1], time + 240, 20)
+            assertEquals(
+                recreated.revision,
+                awaitHidState(scenario, HidQualificationStage.RECOGNITION, 3, armed = true).revision,
             )
-            assertTrue(readHidTrace(scenario).contains("rejected:capture-disarmed"))
+            submitHidCycle(scenario, identities[1], time + 360, 20)
+            awaitHidState(scenario, HidQualificationStage.RECOGNITION, 4, armed = true)
+            scenario.onActivity {
+                val result = (it.application as GlasseoApplication).hidQualificationFlow!!.operations
+                    .getValue(QualificationStep.DOUBLE_SECONDARY)
+                assertEquals(1, result.hidCaptures.size)
+                assertEquals(2, result.hidCaptures.single().size)
+            }
         }
     }
 
-    @Test fun hidPauseReloadAndResumeKeepProcessInterceptionActive() {
+    @Test fun hidReloadAndRecreationReplayThenAckBeforeRearmingWhileInterceptionStaysActive() {
         val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
-            .putExtra(MainActivity.QUALIFICATION_PAUSE_STEP_EXTRA, QualificationStep.SHORT_PRIMARY.name)
         ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
             assertNotNull(ProbeState.await(60))
             lateinit var application: GlasseoApplication
+            val identity = hidIdentity(1)
             scenario.onActivity {
                 application = it.application as GlasseoApplication
-                it.startQualificationForTest(QualificationStep.SHORT_PRIMARY, QualificationMode.HID)
+                it.startHidQualificationForTest(identity.peripheral)
             }
-            val paused = awaitState(
-                scenario,
-                QualificationStep.SHORT_PRIMARY,
-                QualificationPhase.AWAITING_FIRST,
-                armed = false,
-                paused = true,
-            )
+            val before = awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true)
             assertTrue(application.orderedInterception.started)
 
             scenario.onActivity { it.reloadQualificationForTest() }
             assertEquals(
-                paused.revision,
-                awaitState(
-                    scenario,
-                    QualificationStep.SHORT_PRIMARY,
-                    QualificationPhase.AWAITING_FIRST,
-                    armed = false,
-                    paused = true,
-                ).revision,
+                before.revision,
+                awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true).revision,
             )
 
             scenario.recreate()
             assertTrue(application.orderedInterception.started)
             assertEquals(
-                paused.revision,
-                awaitState(
-                    scenario,
-                    QualificationStep.SHORT_PRIMARY,
-                    QualificationPhase.AWAITING_FIRST,
-                    armed = false,
-                    paused = true,
-                ).revision,
+                before.revision,
+                awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true).revision,
             )
+        }
+    }
 
-            ActivityScenario.launch<MainActivity>(
-                Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
-                    .putExtra(MainActivity.QUALIFICATION_RESUME_EXTRA, true),
-            ).use { resumedScenario ->
-                val resumed = awaitState(
-                    resumedScenario,
-                    QualificationStep.SHORT_PRIMARY,
-                    QualificationPhase.AWAITING_FIRST,
-                    armed = true,
-                    paused = false,
-                )
-                assertEquals(paused.revision + 1, resumed.revision)
+    @Test fun hidBridgeBindsSevenShortCyclesThenRecognizesTenOperationsWithoutSettle() {
+        val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
+            .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
+        ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
+            assertNotNull(ProbeState.await(60))
+            val primary = hidIdentity(1)
+            val secondary = hidIdentity(2)
+            val command = hidIdentity(3)
+            val directions = (4..7).map(::hidIdentity)
+            val bindings = listOf(
+                primary,
+                secondary,
+                command,
+                directions[0],
+                directions[1],
+                directions[2],
+                directions[3],
+            )
+            scenario.onActivity { it.startHidQualificationForTest(primary.peripheral) }
+            awaitHidState(scenario, HidQualificationStage.BINDING, 0, armed = true)
+            assertEquals("1/7 Bind PRIMARY|Press the button you wanna bind", readDom(scenario))
+            var time = 1_000L
+            bindings.forEachIndexed { index, identity ->
+                awaitHidState(scenario, HidQualificationStage.BINDING, index, armed = true)
+                submitHidCycle(scenario, identity, time, listOf(2L, 20L, 80L, 150L, 300L)[index % 5])
+                time += 1_000
+            }
+
+            val recognized = listOf(
+                primary to 20L,
+                primary to 700L,
+                secondary to 700L,
+                secondary to 20L,
+                command to 20L,
+                command to 700L,
+                directions[0] to 20L,
+                directions[1] to 20L,
+                directions[2] to 20L,
+                directions[3] to 20L,
+            )
+            recognized.forEachIndexed { index, (identity, duration) ->
+                awaitHidState(scenario, HidQualificationStage.RECOGNITION, index, armed = true)
+                submitHidCycle(scenario, identity, time, duration)
+                if (index == QualificationStep.DOUBLE_SECONDARY.ordinal) {
+                    time += duration + 100
+                    submitHidCycle(scenario, identity, time, duration)
+                }
+                time += 1_000
+            }
+            awaitHidState(scenario, HidQualificationStage.COMPLETE, 10, armed = false)
+
+            scenario.onActivity {
+                val application = it.application as GlasseoApplication
+                val result = application.hidQualificationFlow!!.result()
+                assertTrue(result?.passes == true)
+                assertEquals(7, result?.bindings?.size)
+                assertEquals(10, result?.operations?.size)
+                assertEquals(0, application.hidInputTrace.snapshot().droppedRecords)
                 assertTrue(application.orderedInterception.started)
             }
         }
     }
 
-    @Test fun hidBridgeCompletesTenStepsIntoSevenStableBindings() {
+    @Test fun connectedJoyConDispatchEntryRetainsNoRepeatTwoToThreeHundredMillisecondPairs() {
         val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
         ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
             assertNotNull(ProbeState.await(60))
-            scenario.onActivity {
-                it.startQualificationForTest(QualificationStep.SHORT_PRIMARY, QualificationMode.HID)
-            }
-            awaitState(
-                scenario,
-                QualificationStep.SHORT_PRIMARY,
-                QualificationPhase.AWAITING_FIRST,
-                armed = true,
-            )
-            assertEquals("1/10 Short PRIMARY|Press the button you wanna bind", readDom(scenario))
+            val device = InputDevice.getDeviceIds().asSequence()
+                .mapNotNull(InputDevice::getDevice)
+                .first { it.isExternal && it.vendorId == 1406 && it.productId == 8199 }
+            val peripheral = HidPeripheralIdentity(device.descriptor, device.vendorId, device.productId, device.sources)
+            val durations = listOf(2L, 20L, 80L, 150L, 300L)
+            var time = android.os.SystemClock.uptimeMillis()
+            durations.forEach { duration ->
+                scenario.onActivity { it.startHidQualificationForTest(peripheral) }
+                repeat(7) { index ->
+                    awaitHidState(scenario, HidQualificationStage.BINDING, index, armed = true)
+                    dispatchHidCycle(scenario, device, 96 + index, 304 + index, time, duration)
+                    time += 1_000
+                }
+                awaitHidState(scenario, HidQualificationStage.RECOGNITION, 0, armed = true)
+                dispatchHidCycle(scenario, device, 96, 304, time, duration)
+                time += 1_000
 
-            val primary = hidIdentity(1)
-            val secondary = hidIdentity(2)
-            val command = hidIdentity(3)
-            val directions = (4..7).map(::hidIdentity)
-            val operations = listOf(
-                QualificationStep.SHORT_PRIMARY to hid(primary, BehaviorClass.SHORT),
-                QualificationStep.LONG_PRIMARY to hid(primary, BehaviorClass.LONG),
-                QualificationStep.LONG_SECONDARY to hid(secondary, BehaviorClass.LONG),
-                QualificationStep.DOUBLE_SECONDARY to hid(secondary, BehaviorClass.DOUBLE),
-                QualificationStep.SHORT_COMMAND to hid(command, BehaviorClass.SHORT),
-                QualificationStep.LONG_COMMAND to hid(command, BehaviorClass.LONG),
-                QualificationStep.UP to hid(directions[0], BehaviorClass.DIRECTIONAL),
-                QualificationStep.DOWN to hid(directions[1], BehaviorClass.DIRECTIONAL),
-                QualificationStep.LEFT to hid(directions[2], BehaviorClass.DIRECTIONAL),
-                QualificationStep.RIGHT to hid(directions[3], BehaviorClass.DIRECTIONAL),
-            )
-            operations.forEach { (step, operation) -> completeHidStep(scenario, step, operation) }
-
-            scenario.onActivity {
-                val application = it.application as GlasseoApplication
-                val result = application.qualificationSession!!.wizard.hidResult()
-                assertTrue(result?.passes == true)
-                assertEquals(7, result?.bindings?.size)
-                assertEquals(10, result?.operations?.size)
-                assertTrue(application.orderedInterception.started)
+                scenario.onActivity {
+                    val application = it.application as GlasseoApplication
+                    val trace = application.hidInputTrace
+                    assertEquals(16, trace.allRawReceipts().size)
+                    assertEquals(16, trace.allDecisions().size)
+                    assertTrue(trace.allRawReceipts().all { receipt -> receipt.repeatCount == 0 })
+                    assertEquals(BehaviorClass.SHORT, application.hidQualificationFlow!!.operations
+                        .getValue(QualificationStep.SHORT_PRIMARY).step.behavior)
+                    assertEquals(0, trace.snapshot().droppedRecords)
+                }
             }
         }
     }
@@ -460,27 +448,70 @@ class WebViewQualificationTest {
         scenario.onActivity { assertTrue(it.submitQualificationForTest(operation)) }
     }
 
-    private fun completeHidStep(
+    private fun submitHidCycle(
         scenario: ActivityScenario<MainActivity>,
-        step: QualificationStep,
-        operation: QualificationOperation,
+        identity: HidPhysicalIdentity,
+        downAt: Long,
+        duration: Long,
     ) {
-        awaitState(scenario, step, QualificationPhase.AWAITING_FIRST, armed = true)
-        submit(scenario, operation)
-        awaitRendered(step, QualificationPhase.SETTLING_FIRST)
-        awaitState(scenario, step, QualificationPhase.AWAITING_CONFIRMATION, armed = true)
-        submit(scenario, operation)
-        awaitRendered(step, QualificationPhase.SETTLING_SECOND)
-        if (step == QualificationStep.RIGHT) {
-            awaitState(scenario, step, QualificationPhase.STEP_CONFIRMED, armed = false)
-        } else {
-            awaitState(
-                scenario,
-                QualificationStep.entries[step.ordinal + 1],
-                QualificationPhase.AWAITING_FIRST,
-                armed = true,
+        scenario.onActivity {
+            it.submitHidInputForTest(
+                HidRawInput(PhysicalAction.DOWN, identity, 6, 0, downAt, downAt),
+            )
+            it.submitHidInputForTest(
+                HidRawInput(PhysicalAction.UP, identity, 6, 0, downAt + duration, downAt + duration),
             )
         }
+    }
+
+    private fun dispatchHidCycle(
+        scenario: ActivityScenario<MainActivity>,
+        device: InputDevice,
+        keyCode: Int,
+        scanCode: Int,
+        downAt: Long,
+        duration: Long,
+    ) {
+        scenario.onActivity { activity ->
+            activity.dispatchKeyEvent(
+                KeyEvent(downAt, downAt, KeyEvent.ACTION_DOWN, keyCode, 0, 0, device.id, scanCode, 0, device.sources),
+            )
+            activity.dispatchKeyEvent(
+                KeyEvent(
+                    downAt,
+                    downAt + duration,
+                    KeyEvent.ACTION_UP,
+                    keyCode,
+                    0,
+                    0,
+                    device.id,
+                    scanCode,
+                    0,
+                    device.sources,
+                ),
+            )
+        }
+    }
+
+    private fun awaitHidState(
+        scenario: ActivityScenario<MainActivity>,
+        stage: HidQualificationStage,
+        stepIndex: Int,
+        armed: Boolean,
+    ): HidQualificationSnapshot {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            var snapshot: HidQualificationSnapshot? = null
+            var isArmed = false
+            scenario.onActivity {
+                val flow = (it.application as GlasseoApplication).hidQualificationFlow
+                snapshot = flow?.snapshot
+                isArmed = flow?.isArmed == true
+            }
+            if (snapshot?.stage == stage && snapshot?.stepIndex == stepIndex && isArmed == armed) return snapshot!!
+            Thread.sleep(50)
+        }
+        throw AssertionError("HID state did not reach $stage step=$stepIndex armed=$armed")
     }
 
     private fun awaitRendered(step: QualificationStep, phase: QualificationPhase) {

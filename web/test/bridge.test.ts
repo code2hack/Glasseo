@@ -35,6 +35,20 @@ test("bridge accepts its narrow message types", () => {
       phase: "AWAITING_FIRST",
     },
   );
+  assert.deepEqual(
+    decodeNativeMessage(
+      '{"type":"hid-qualification-rendered","sessionId":"hid-1","revision":8,' +
+        '"stage":"BINDING","stepIndex":3,"phase":"AWAITING_INPUT"}',
+    ),
+    {
+      type: "hid-qualification-rendered",
+      sessionId: "hid-1",
+      revision: 8,
+      stage: "BINDING",
+      stepIndex: 3,
+      phase: "AWAITING_INPUT",
+    },
+  );
 });
 
 test("bridge rejects malformed and unknown messages", () => {
