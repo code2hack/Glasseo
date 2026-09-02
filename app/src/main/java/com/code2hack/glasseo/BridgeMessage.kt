@@ -5,6 +5,29 @@ import org.json.JSONObject
 sealed interface BridgeMessage {
     data object Hello : BridgeMessage
 
+    data class SemanticReceived(
+        val control: SemanticControl,
+        val action: SemanticAction,
+        val interactionId: Long,
+    ) : BridgeMessage
+
+    data class QualificationStart(val mode: QualificationMode) : BridgeMessage
+
+    data class QualificationRendered(
+        val sessionId: String,
+        val revision: Long,
+        val stepIndex: Int,
+        val phase: QualificationPhase,
+    ) : BridgeMessage
+
+    data class HidQualificationRendered(
+        val sessionId: String,
+        val revision: Long,
+        val stage: HidQualificationStage,
+        val stepIndex: Int,
+        val phase: HidQualificationPhase,
+    ) : BridgeMessage
+
     data class ProbeResult(
         val passed: Boolean,
         val checks: Map<String, Boolean>,
@@ -35,6 +58,37 @@ sealed interface BridgeMessage {
                     Hello
                 }
                 "probe-result" -> parseProbe(json)
+                "qualification-start" -> {
+                    require(json.length() == 2) { "Malformed qualification start" }
+                    QualificationStart(QualificationMode.valueOf(json.getString("mode")))
+                }
+                "qualification-rendered" -> {
+                    require(json.length() == 5) { "Malformed qualification render acknowledgement" }
+                    QualificationRendered(
+                        json.getString("sessionId").also { require(it.isNotEmpty()) },
+                        json.getLong("revision").also { require(it > 0) },
+                        json.getInt("stepIndex").also { require(it in QualificationStep.entries.indices) },
+                        QualificationPhase.valueOf(json.getString("phase")),
+                    )
+                }
+                "hid-qualification-rendered" -> {
+                    require(json.length() == 6) { "Malformed HID qualification render acknowledgement" }
+                    HidQualificationRendered(
+                        json.getString("sessionId").also { require(it.isNotEmpty()) },
+                        json.getLong("revision").also { require(it > 0) },
+                        HidQualificationStage.valueOf(json.getString("stage")),
+                        json.getInt("stepIndex").also { require(it in 0..QualificationStep.entries.size) },
+                        HidQualificationPhase.valueOf(json.getString("phase")),
+                    )
+                }
+                "semantic-received" -> {
+                    require(json.length() == 4) { "Malformed semantic receipt" }
+                    SemanticReceived(
+                        SemanticControl.valueOf(json.getString("control")),
+                        SemanticAction.valueOf(json.getString("action")),
+                        json.getLong("interactionId").also { require(it > 0) },
+                    )
+                }
                 else -> error("Unknown bridge message")
             }
         }
