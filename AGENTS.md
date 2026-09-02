@@ -193,9 +193,24 @@ Every Worker spawn prompt includes:
 - required build, test, and verification commands from `DEV.md`;
 - human-gate and reporting procedure.
 
-**Mandatory delivery verification:** for every direct Manager↔Worker message, the sender MUST make sure the message has been successfully submitted to the intended receiver **before ending the current turn or continuing to other work**. This applies in both directions and includes spawn prompts, implementation instructions, corrections, questions, blocker/human-gate reports, progress reports, completion reports, and acknowledgements that carry work-critical information.
+**Mandatory delivery-and-liveness verification:** every direct Manager↔Worker message has two independent conditions that MUST both be verified by the sender **before the sender may end the current turn or continue to unrelated work**:
 
-For tmux communication, merely issuing a `send-keys`/injection command is not sufficient evidence of successful submission. The sender must verify the intended tmux target exists and obtain delivery evidence, such as the complete message appearing in the receiver's target pane or an equivalent transport-level confirmation. Receiver acknowledgement is useful when available but is not required merely to prove submission. If submission cannot be verified, the sender must retry or repair the communication path and must not end the turn or move on to unrelated work as though the message had been delivered. If the communication path remains unavailable and blocks progress, escalate through the documented Manager/ALARM procedure.
+1. **`DELIVERED`** — the complete intended message has actually been submitted to the intended receiver, not merely typed, injected, or queued toward an assumed target.
+2. **`RECEIVER_RUNNING`** — after submission, the intended receiving Codex thread/process is demonstrably still alive and running in the intended tmux target and is in a state capable of accepting/processing the submitted work. A tmux pane that merely exists is not sufficient. A pane whose Codex process has exited, crashed, terminated, fallen back to an ordinary shell prompt, or otherwise cannot process the message fails this condition.
+
+This rule applies identically in both directions and includes Worker spawn prompts, implementation instructions, corrections, questions, blocker/human-gate reports, progress reports, completion reports, acknowledgements that carry work-critical information, and every other direct Manager↔Worker work message.
+
+Codex UI/status wording may change between versions. The protocol therefore does not depend on one exact status label: `RECEIVER_RUNNING` means the equivalent observable condition that the intended Codex thread/process is live and able to accept/process the work. A receiver that is currently busy/processing may satisfy this condition only when the transport demonstrably accepts the submitted message for that same live Codex thread; sender-side command success alone is never sufficient.
+
+For tmux communication, merely issuing `send-keys`/an injection command, receiving a successful shell exit code, observing that the tmux target exists, or seeing only part of the message is **not** sufficient evidence. The sender MUST, after submission:
+
+1. verify the exact intended tmux session/window/pane still exists;
+2. obtain evidence that the **complete** message was submitted to that receiver, such as the complete message appearing in the receiver's Codex pane or an equivalent transport-level confirmation; and
+3. verify that the receiving Codex thread/process is still `RECEIVER_RUNNING` as defined above.
+
+Only after all three checks pass may the sender treat the communication as complete, end the current turn, or move on to another job. Receiver acknowledgement is useful additional evidence but does not replace either `DELIVERED` or `RECEIVER_RUNNING`.
+
+If either condition cannot be verified, the sender MUST stop normal progress on that communication path, retry or repair the target/process, and re-submit as necessary. The sender MUST NOT end the turn, start unrelated work, spawn the next Worker, merge/close based on the unverified message, or report the message as delivered. If the receiver cannot be restored to a running/accepting state or the communication path remains unavailable, escalate through the documented Manager/ALARM procedure while preserving safe state.
 
 Worker reports begin with the Worker identity. The Manager records important Worker findings on the issue or pull request.
 
@@ -326,7 +341,7 @@ For each `PLANNED` ticket selected for dispatch, the Manager performs these step
 2. Fetch canonical remote `main` and make the current `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` available to the Worker as read-only project references.
 3. Spawn exactly one Worker for that issue.
 4. Provide the Worker with the issue URL, CTO plan comment, assigned host and profile, branch/worktree instructions, required project documents, Manager tmux coordinates, tests, verification requirements, and reporting/human-gate procedure.
-5. Verify the complete spawn message was successfully submitted to the intended Worker according to Section 4.2, then confirm the Worker started correctly.
+5. Verify the complete spawn message is `DELIVERED` and the intended Worker is `RECEIVER_RUNNING` according to Section 4.2.
 6. Record the Worker identity and work state on the issue.
 7. Only then proceed to spawn the next planned Worker.
 
@@ -342,7 +357,7 @@ A Worker follows this loop:
 2. Confirm that the implementation worktree has no intentional diff to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md`.
 3. Implement the CTO plan.
 4. Run required build, test, verification, and debugging commands.
-5. Report any blocker, article-change need, or human gate to the Manager instead of editing a project article, and verify that report was successfully submitted before ending the turn or continuing other work.
+5. Report any blocker, article-change need, or human gate to the Manager instead of editing a project article, and verify both `DELIVERED` and Manager `RECEIVER_RUNNING` according to Section 4.2 before ending the turn or continuing other work.
 6. Update implementation and tests until acceptance criteria pass.
 7. Before commit/push, fetch remote `main` again, re-check any article changes that affect the work, and ensure the four project articles are absent from the implementation diff.
 8. Commit and push the assigned branch.
@@ -353,7 +368,7 @@ A Worker follows this loop:
    - real-device or integration evidence;
    - known limitations or residual risks;
    - deviations from the CTO plan, if any.
-10. Verify the completion report was successfully submitted to the Manager before ending the turn.
+10. Verify both `DELIVERED` and Manager `RECEIVER_RUNNING` for the completion report according to Section 4.2 before ending the turn.
 
 ## 9. Pull request, review, and correction loop
 
@@ -369,7 +384,7 @@ When review returns `CHANGES_REQUESTED`:
 
 1. The CTO writes a concrete correction plan on the issue or pull request.
 2. The CTO informs the Manager through `$ask-chatgpt`.
-3. The Manager re-dispatches the correction plan to the same Worker and verifies successful submission according to Section 4.2 before ending the turn or continuing other work.
+3. The Manager re-dispatches the correction plan to the same Worker and verifies both `DELIVERED` and Worker `RECEIVER_RUNNING` according to Section 4.2 before ending the turn or continuing other work.
 4. The Worker updates, tests, commits, pushes, and reports again.
 5. The loop repeats until the CTO records `PASS`.
 
