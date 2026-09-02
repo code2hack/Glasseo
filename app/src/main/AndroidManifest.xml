@@ -3,6 +3,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
+        android:name=".GlasseoApplication"
         android:allowBackup="false"
         android:label="Glasseo"
         android:supportsRtl="true"

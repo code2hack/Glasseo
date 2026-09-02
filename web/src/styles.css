@@ -25,3 +25,44 @@ p {
   color: #b8c4cc;
   font-size: 20px;
 }
+
+main {
+  display: grid;
+  gap: 16px;
+}
+
+button {
+  min-height: 64px;
+  padding: 12px 24px;
+  border: 2px solid #fff;
+  border-radius: 8px;
+  background: #111;
+  color: #fff;
+  font: inherit;
+  font-size: 20px;
+}
+
+.qualification-prompt {
+  color: #fff;
+}
+
+.qualification-error {
+  color: #ff8b8b;
+}
+
+output {
+  overflow-wrap: anywhere;
+  color: #8ed6ff;
+  font-size: 14px;
+}
+
+.hid-input-trace-heading {
+  color: #fff;
+  font-size: 14px;
+}
+
+.hid-input-trace {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+}

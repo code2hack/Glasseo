@@ -6,11 +6,48 @@ import {
   requiredProbeChecks,
 } from "../src/native/bridge";
 
-test("bridge accepts its two narrow message types", () => {
+test("bridge accepts its narrow message types", () => {
   assert.deepEqual(decodeNativeMessage('{"type":"hello"}'), { type: "hello" });
   assert.equal(
     decodeNativeMessage(JSON.stringify(probeResult())).type,
     "probe-result",
+  );
+  assert.equal(
+    decodeNativeMessage(
+      '{"type":"semantic-received","control":"PRIMARY","action":"SHORT","interactionId":1}',
+    ).type,
+    "semantic-received",
+  );
+  assert.equal(
+    decodeNativeMessage('{"type":"qualification-start","mode":"HID"}').type,
+    "qualification-start",
+  );
+  assert.deepEqual(
+    decodeNativeMessage(
+      '{"type":"qualification-rendered","sessionId":"session-1","revision":7,' +
+        '"stepIndex":5,"phase":"AWAITING_FIRST"}',
+    ),
+    {
+      type: "qualification-rendered",
+      sessionId: "session-1",
+      revision: 7,
+      stepIndex: 5,
+      phase: "AWAITING_FIRST",
+    },
+  );
+  assert.deepEqual(
+    decodeNativeMessage(
+      '{"type":"hid-qualification-rendered","sessionId":"hid-1","revision":8,' +
+        '"stage":"BINDING","stepIndex":3,"phase":"AWAITING_INPUT"}',
+    ),
+    {
+      type: "hid-qualification-rendered",
+      sessionId: "hid-1",
+      revision: 8,
+      stage: "BINDING",
+      stepIndex: 3,
+      phase: "AWAITING_INPUT",
+    },
   );
 });
 
@@ -20,6 +57,7 @@ test("bridge rejects malformed and unknown messages", () => {
     "{}",
     '{"type":"other"}',
     '{"type":"probe-result"}',
+    '{"type":"qualification-rendered","sessionId":"session-1","revision":0,"stepIndex":5,"phase":"AWAITING_FIRST"}',
   ]) {
     assert.throws(() => decodeNativeMessage(value));
   }

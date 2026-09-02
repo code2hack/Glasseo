@@ -17,7 +17,36 @@ export const requiredProbeChecks = [
   "remoteNavigationRejected",
 ] as const;
 
-export type NativeMessage = { type: "hello" } | ProbeResult;
+export type NativeMessage =
+  | { type: "hello" }
+  | { type: "qualification-start"; mode: "BUILT_IN" | "HID" }
+  | {
+      type: "qualification-rendered";
+      sessionId: string;
+      revision: number;
+      stepIndex: number;
+      phase:
+        | "AWAITING_FIRST"
+        | "SETTLING_FIRST"
+        | "AWAITING_CONFIRMATION"
+        | "SETTLING_SECOND"
+        | "STEP_CONFIRMED";
+    }
+  | {
+      type: "hid-qualification-rendered";
+      sessionId: string;
+      revision: number;
+      stage: "BINDING" | "RECOGNITION" | "COMPLETE";
+      stepIndex: number;
+      phase: "AWAITING_INPUT" | "STEP_CONFIRMED" | "COMPLETE";
+    }
+  | ProbeResult
+  | {
+      type: "semantic-received";
+      control: string;
+      action: string;
+      interactionId: number;
+    };
 
 type NativePort = { postMessage(message: string): void };
 
@@ -34,6 +63,60 @@ export function decodeNativeMessage(value: string): NativeMessage {
   }
   const message = parsed as Record<string, unknown>;
   if (message.type === "hello") return { type: "hello" };
+  if (
+    message.type === "qualification-start" &&
+    Object.keys(message).length === 2 &&
+    (message.mode === "BUILT_IN" || message.mode === "HID")
+  ) {
+    return message as NativeMessage;
+  }
+  if (
+    message.type === "qualification-rendered" &&
+    Object.keys(message).length === 5 &&
+    typeof message.sessionId === "string" &&
+    message.sessionId.length > 0 &&
+    Number.isSafeInteger(message.revision) &&
+    (message.revision as number) > 0 &&
+    Number.isSafeInteger(message.stepIndex) &&
+    (message.stepIndex as number) >= 0 &&
+    (message.stepIndex as number) < 10 &&
+    [
+      "AWAITING_FIRST",
+      "SETTLING_FIRST",
+      "AWAITING_CONFIRMATION",
+      "SETTLING_SECOND",
+      "STEP_CONFIRMED",
+    ].includes(message.phase as string)
+  ) {
+    return message as NativeMessage;
+  }
+  if (
+    message.type === "hid-qualification-rendered" &&
+    Object.keys(message).length === 6 &&
+    typeof message.sessionId === "string" &&
+    message.sessionId.length > 0 &&
+    Number.isSafeInteger(message.revision) &&
+    (message.revision as number) > 0 &&
+    ["BINDING", "RECOGNITION", "COMPLETE"].includes(message.stage as string) &&
+    Number.isSafeInteger(message.stepIndex) &&
+    (message.stepIndex as number) >= 0 &&
+    (message.stepIndex as number) <= 10 &&
+    ["AWAITING_INPUT", "STEP_CONFIRMED", "COMPLETE"].includes(
+      message.phase as string,
+    )
+  ) {
+    return message as NativeMessage;
+  }
+  if (
+    message.type === "semantic-received" &&
+    Object.keys(message).length === 4 &&
+    typeof message.control === "string" &&
+    typeof message.action === "string" &&
+    Number.isSafeInteger(message.interactionId) &&
+    (message.interactionId as number) > 0
+  ) {
+    return message as NativeMessage;
+  }
   if (
     message.type === "probe-result" &&
     typeof message.passed === "boolean" &&
