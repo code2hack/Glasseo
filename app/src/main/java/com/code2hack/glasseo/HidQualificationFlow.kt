@@ -44,9 +44,9 @@ class HidQualificationFlow(
     private val timing: InputTiming = InputTiming(),
 ) {
     private data class ActivePress(
+        val owner: PhysicalOwner,
         val identity: HidPhysicalIdentity,
         val downAtMillis: Long,
-        val repeated: Boolean = false,
     )
 
     private val bindingOrder = listOf(
@@ -91,28 +91,14 @@ class HidQualificationFlow(
         if (!input.identity.peripheral.sameDevice(expectedPeripheral)) {
             return HidFlowDecision("Rejected: use the selected HID device")
         }
-        if (input.action == PhysicalAction.CANCEL) {
-            activePress = null
-            recognitionCapture.cancelAll(input.eventTimeMillis)
-            return HidFlowDecision("Input cancelled")
-        }
-        if (input.action == PhysicalAction.REPEAT) {
-            if (snapshot.stage == HidQualificationStage.BINDING) {
-                activePress = activePress?.copy(repeated = true)
-            }
-            return HidFlowDecision("Repeat ignored; waiting for matching UP")
-        }
         return when (snapshot.stage) {
             HidQualificationStage.BINDING -> when (input.action) {
                 PhysicalAction.DOWN -> handleBindingDown(input)
+                PhysicalAction.REPEAT -> handleBindingRepeat(input)
                 PhysicalAction.UP -> handleBindingUp(input)
-                else -> error("handled above")
+                PhysicalAction.CANCEL -> handleBindingCancel(input)
             }
-            HidQualificationStage.RECOGNITION -> when (input.action) {
-                PhysicalAction.DOWN -> handleRecognitionDown(input)
-                PhysicalAction.UP -> handleRecognitionUp(input)
-                else -> error("handled above")
-            }
+            HidQualificationStage.RECOGNITION -> handleRecognition(input)
             HidQualificationStage.COMPLETE -> HidFlowDecision("Rejected: qualification is complete")
         }
     }
@@ -138,19 +124,33 @@ class HidQualificationFlow(
 
     private fun handleBindingDown(input: HidRawInput): HidFlowDecision {
         if (activePress != null) return HidFlowDecision("Rejected: another DOWN is active")
-        activePress = ActivePress(input.identity, input.eventTimeMillis)
+        activePress = ActivePress(input.owner(), input.identity, input.eventTimeMillis)
         return HidFlowDecision("DOWN received; waiting for matching UP")
+    }
+
+    private fun handleBindingRepeat(input: HidRawInput): HidFlowDecision {
+        val press = activePress ?: return HidFlowDecision("Repeat ignored: no admitted DOWN")
+        if (!press.matches(input)) {
+            return HidFlowDecision("Rejected: repeat does not match admitted DOWN")
+        }
+        return HidFlowDecision("Repeat ignored; waiting for matching UP")
+    }
+
+    private fun handleBindingCancel(input: HidRawInput): HidFlowDecision {
+        val press = activePress ?: return HidFlowDecision("Cancel ignored: no admitted DOWN")
+        if (!press.matches(input)) {
+            return HidFlowDecision("Rejected: CANCEL does not match admitted DOWN")
+        }
+        activePress = null
+        return HidFlowDecision("Input cancelled")
     }
 
     private fun handleBindingUp(input: HidRawInput): HidFlowDecision {
         val press = activePress ?: return HidFlowDecision("Rejected: UP without DOWN")
-        if (!press.identity.sameControl(input.identity)) {
+        if (!press.matches(input)) {
             return HidFlowDecision("Rejected: UP does not match admitted DOWN")
         }
         activePress = null
-        if (press.repeated) {
-            return HidFlowDecision("Complete DOWN/UP rejected: binding press contained a repeat")
-        }
         val duration = input.eventTimeMillis - press.downAtMillis
         if (duration !in 0 until timing.longPressMillis) {
             return HidFlowDecision("Complete DOWN/UP rejected: binding press must be short")
@@ -172,14 +172,6 @@ class HidQualificationFlow(
         )
     }
 
-    private fun handleRecognitionDown(input: HidRawInput): HidFlowDecision {
-        return handleRecognition(input)
-    }
-
-    private fun handleRecognitionUp(input: HidRawInput): HidFlowDecision {
-        return handleRecognition(input)
-    }
-
     private fun handleRecognition(input: HidRawInput): HidFlowDecision {
         val step = checkNotNull(snapshot.recognitionStep)
         val expected = step.control
@@ -189,7 +181,7 @@ class HidQualificationFlow(
             return HidFlowDecision("Rejected: expected ${expected.name} but received ${received.name}")
         }
         val capture = recognitionCapture.handleDetailed(
-            PhysicalOwner(PhysicalSource.HID, input.deviceId, input.identity.keyCode),
+            input.owner(),
             input.identity,
             received,
             input.action,
@@ -273,4 +265,9 @@ class HidQualificationFlow(
         stepIndex,
         phase,
     )
+
+    private fun HidRawInput.owner() = PhysicalOwner(PhysicalSource.HID, deviceId, identity.keyCode)
+
+    private fun ActivePress.matches(input: HidRawInput) =
+        owner == input.owner() && identity.sameControl(input.identity)
 }

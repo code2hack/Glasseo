@@ -72,19 +72,117 @@ class HidQualificationFlowTest {
         }
     }
 
-    @Test fun bindingRejectsARepeatedDownCycle() {
+    @Test fun bindingAcceptsA485MillisShortPressWithAndroidRepeats() {
         val flow = HidQualificationFlow("hid-session", peripheral)
         val primary = identities.getValue(SemanticControl.PRIMARY)
         acknowledgeReady(flow)
 
         flow.handle(input(primary, PhysicalAction.DOWN, 1_000))
-        flow.handle(input(primary, PhysicalAction.REPEAT, 1_500))
-        val up = flow.handle(input(primary, PhysicalAction.UP, 1_600))
+        flow.handle(input(primary, PhysicalAction.REPEAT, 1_401, repeatCount = 1))
+        flow.handle(input(primary, PhysicalAction.REPEAT, 1_452, repeatCount = 2))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 1_485))
 
-        assertEquals("Complete DOWN/UP rejected: binding press contained a repeat", up.reason)
+        assertEquals("Complete DOWN/UP received and accepted: PRIMARY bound", up.reason)
+        assertEquals(primary, flow.bindings.identityFor(SemanticControl.PRIMARY))
+    }
+
+    @Test fun shortRecognitionUsesDownToUpDurationWhenAndroidRepeats() {
+        val flow = bindAll(20)
+        acknowledgeReady(flow)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 20_000))
+        flow.handle(input(primary, PhysicalAction.REPEAT, 20_401, repeatCount = 1))
+        flow.handle(input(primary, PhysicalAction.REPEAT, 20_452, repeatCount = 2))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 20_485))
+
+        assertEquals(BehaviorClass.SHORT, (up.operation?.signature as HidOperationSignature).behavior)
+    }
+
+    @Test fun longRecognitionUsesDownToUpDurationWhenAndroidRepeats() {
+        val flow = bindAll(20)
+        completeRecognition(flow, QualificationStep.SHORT_PRIMARY, 20)
+        acknowledgeReady(flow)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 30_000))
+        flow.handle(input(primary, PhysicalAction.REPEAT, 30_401, repeatCount = 1))
+        flow.handle(input(primary, PhysicalAction.REPEAT, 30_452, repeatCount = 2))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 30_700))
+
+        assertEquals(BehaviorClass.LONG, (up.operation?.signature as HidOperationSignature).behavior)
+    }
+
+    @Test fun mismatchedOwnerRepeatCannotCorruptAnAdmittedRecognitionPress() {
+        val flow = bindAll(20)
+        acknowledgeReady(flow)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 20_000, deviceId = 6))
+        val repeat = flow.handle(input(primary, PhysicalAction.REPEAT, 20_100, deviceId = 7, repeatCount = 1))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 20_300, deviceId = 6))
+
+        assertEquals("repeat-ignored", repeat.reason)
+        assertEquals(BehaviorClass.SHORT, (up.operation?.signature as HidOperationSignature).behavior)
+    }
+
+    @Test fun mismatchedOwnerOrIdentityRepeatsCannotPoisonAnAdmittedBindingPress() {
+        val flow = HidQualificationFlow("hid-session", peripheral)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+        val secondary = identities.getValue(SemanticControl.SECONDARY)
+        acknowledgeReady(flow)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 1_000, deviceId = 6))
+        val wrongOwner = flow.handle(input(primary, PhysicalAction.REPEAT, 1_100, deviceId = 7, repeatCount = 1))
+        val wrongIdentity = flow.handle(input(secondary, PhysicalAction.REPEAT, 1_200, deviceId = 6, repeatCount = 2))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 1_300, deviceId = 6))
+
+        assertEquals("Rejected: repeat does not match admitted DOWN", wrongOwner.reason)
+        assertEquals("Rejected: repeat does not match admitted DOWN", wrongIdentity.reason)
+        assertEquals("Complete DOWN/UP received and accepted: PRIMARY bound", up.reason)
+    }
+
+    @Test fun mismatchedOwnerOrIdentityCancelsCannotPoisonAnAdmittedBindingPress() {
+        val flow = HidQualificationFlow("hid-session", peripheral)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+        val secondary = identities.getValue(SemanticControl.SECONDARY)
+        acknowledgeReady(flow)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 1_000, deviceId = 6))
+        val wrongOwner = flow.handle(input(primary, PhysicalAction.CANCEL, 1_100, deviceId = 7))
+        val wrongIdentity = flow.handle(input(secondary, PhysicalAction.CANCEL, 1_200, deviceId = 6))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 1_300, deviceId = 6))
+
+        assertEquals("Rejected: CANCEL does not match admitted DOWN", wrongOwner.reason)
+        assertEquals("Rejected: CANCEL does not match admitted DOWN", wrongIdentity.reason)
+        assertEquals("Complete DOWN/UP received and accepted: PRIMARY bound", up.reason)
+    }
+
+    @Test fun matchingBindingCancelMakesItsLateUpInert() {
+        val flow = HidQualificationFlow("hid-session", peripheral)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+        acknowledgeReady(flow)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 1_000))
+        val cancel = flow.handle(input(primary, PhysicalAction.CANCEL, 1_100))
+        val lateUp = flow.handle(input(primary, PhysicalAction.UP, 1_200))
+
+        assertEquals("Input cancelled", cancel.reason)
+        assertEquals("Rejected: UP without DOWN", lateUp.reason)
         assertEquals(0, flow.bindings.size)
-        assertEquals(HidQualificationPhase.AWAITING_INPUT, flow.snapshot.phase)
-        assertTrue(flow.isArmed)
+    }
+
+    @Test fun mismatchedOwnerCancelCannotCorruptAnAdmittedRecognitionPress() {
+        val flow = bindAll(20)
+        acknowledgeReady(flow)
+        val primary = identities.getValue(SemanticControl.PRIMARY)
+
+        flow.handle(input(primary, PhysicalAction.DOWN, 20_000, deviceId = 6))
+        val cancel = flow.handle(input(primary, PhysicalAction.CANCEL, 20_100, deviceId = 7))
+        val up = flow.handle(input(primary, PhysicalAction.UP, 20_300, deviceId = 6))
+
+        assertEquals("action-ignored", cancel.reason)
+        assertEquals(BehaviorClass.SHORT, (up.operation?.signature as HidOperationSignature).behavior)
     }
 
     @Test fun recognitionUsesLockedBindingAndDoubleNeedsTwoCyclesWithoutIntermediateRenderAck() {
@@ -198,11 +296,12 @@ class HidQualificationFlowTest {
         action: PhysicalAction,
         time: Long,
         deviceId: Int = 6,
+        repeatCount: Int = 0,
     ) = HidRawInput(
         action,
         identity,
         deviceId = deviceId,
-        repeatCount = 0,
+        repeatCount = repeatCount,
         eventTimeMillis = time,
         receivedElapsedRealtimeMillis = time,
     )
