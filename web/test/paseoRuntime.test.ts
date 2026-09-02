@@ -598,6 +598,74 @@ test("directory events include archive, isolate consumers, and unsubscribe", asy
   await runtime.close();
 });
 
+test("timeline events preserve exact v0.7.0 facts, isolate consumers, and unsubscribe", async () => {
+  const { runtime, transport } = await connect();
+  const received: unknown[] = [];
+  runtime.subscribeTimeline(() => {
+    throw new Error("fixture subscriber");
+  });
+  const unsubscribe = runtime.subscribeTimeline((event) =>
+    received.push(event),
+  );
+
+  transport.receive({
+    type: "agent_stream",
+    payload: {
+      agentId: "agent-1",
+      event: {
+        type: "timeline",
+        provider: "codex",
+        turnId: "turn-1",
+        item: {
+          type: "assistant_message",
+          text: "redacted",
+          messageId: "message-1",
+        },
+      },
+      timestamp: "2026-09-03T00:00:00Z",
+      seq: 7,
+      epoch: "epoch-1",
+    },
+  });
+  transport.receive({
+    type: "agent.timeline.replacement",
+    payload: { agentId: "agent-1", epoch: "epoch-2" },
+  });
+  assert.deepEqual(received, [
+    {
+      type: "agent_stream",
+      agentId: "agent-1",
+      event: {
+        type: "timeline",
+        provider: "codex",
+        turnId: "turn-1",
+        item: {
+          type: "assistant_message",
+          text: "redacted",
+          messageId: "message-1",
+        },
+      },
+      timestamp: "2026-09-03T00:00:00Z",
+      seq: 7,
+      epoch: "epoch-1",
+    },
+    {
+      type: "agent.timeline.replacement",
+      agentId: "agent-1",
+      epoch: "epoch-2",
+    },
+  ]);
+
+  unsubscribe();
+  transport.receive({
+    type: "agent.timeline.replacement",
+    payload: { agentId: "agent-1", epoch: "epoch-3" },
+  });
+  assert.equal(received.length, 2);
+  assert.equal(runtime.getHost()?.serverId, "host-1");
+  await runtime.close();
+});
+
 test("real adapter pages exact directory RPCs into a normalized replica", async () => {
   const { runtime, transport } = await connect();
   const profile: StoredHostProfile = {
