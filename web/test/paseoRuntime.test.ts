@@ -184,6 +184,61 @@ test("hello uses mobile identity and only Glasseo's implemented capability", asy
   await runtime.close();
 });
 
+test("connect remains pending after open until valid server_info arrives", async () => {
+  const harness = new Harness();
+  const runtime = createPaseoRuntime(options(harness));
+  let settled = false;
+  const connected = runtime.connect().finally(() => {
+    settled = true;
+  });
+  const transport = harness.transports[0];
+  transport.open();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(settled, false);
+
+  transport.receive({
+    type: "status",
+    payload: {
+      status: "server_info",
+      serverId: "host-1",
+      hostname: "fixture-host",
+      version: "0.7.0",
+    },
+  });
+  assert.equal((await connected).serverId, "host-1");
+  await runtime.close();
+});
+
+test("a throwing connection subscriber cannot close or starve the runtime", async () => {
+  const harness = new Harness();
+  const runtime = createPaseoRuntime(options(harness));
+  const observed: string[] = [];
+  runtime.subscribeConnection((state) => {
+    if (state.status === "connected") throw new Error("fixture subscriber");
+  });
+  runtime.subscribeConnection((state) => observed.push(state.status));
+  const connected = runtime.connect();
+  const transport = harness.transports[0];
+  transport.open();
+  transport.receive({
+    type: "status",
+    payload: {
+      status: "server_info",
+      serverId: "host-1",
+      hostname: "fixture-host",
+      version: "0.7.0",
+    },
+  });
+  assert.equal((await connected).serverId, "host-1");
+  assert.deepEqual(observed, ["idle", "connecting", "connected"]);
+
+  const projects = runtime.listProjects();
+  const request = transport.last("project.list.request");
+  transport.reply(request, "project.list.response", { projects: [] });
+  assert.deepEqual((await projects).projects, []);
+  await runtime.close();
+});
+
 test("connection fails closed for wrong identity, missing version, or unsupported version", async () => {
   for (const [payload, code] of [
     [{ serverId: "other" }, "wrong_daemon"],

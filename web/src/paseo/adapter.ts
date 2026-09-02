@@ -70,7 +70,7 @@ export type PaseoUsage = Outbound<"provider.usage.list.response">;
 export type PaseoWorkspacesOptions = Omit<
   Inbound<"fetch_workspaces_request">,
   "type" | "requestId"
-> & { requestId?: string; timeout?: number };
+> & { requestId?: string };
 export type PaseoAgentsOptions = Omit<
   Inbound<"fetch_agents_request">,
   "type" | "requestId"
@@ -210,11 +210,31 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
     transportFactory: options.testTransportFactory,
   });
 
+  function notifyConnectionListener(
+    listener: (state: PaseoConnectionState) => void,
+    state: PaseoConnectionState,
+  ): void {
+    try {
+      listener(state);
+    } catch {
+      try {
+        options.log?.("warn", "Paseo connection subscriber failed");
+      } catch {
+        // Subscriber and logging failures never affect connection ownership.
+      }
+    }
+  }
+
+  function notifyConnectionListeners(state: PaseoConnectionState): void {
+    for (const listener of connectionListeners)
+      notifyConnectionListener(listener, state);
+  }
+
   subscriptions.add(
     client.subscribeConnectionStatus((state) => {
       if (state.status === "disconnected") host = null;
       if (state.status === "connected" && host === null) return;
-      for (const listener of connectionListeners) listener(state);
+      notifyConnectionListeners(state);
     }),
   );
 
@@ -256,17 +276,19 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
     client.on("status", () => {
       if (host !== null || client.getConnectionState().status !== "connected")
         return;
+      let acceptedHost: PaseoHostInfo;
       try {
-        host = normalizeHost(
+        acceptedHost = normalizeHost(
           client.getLastServerInfoMessage(),
           options.expectedServerId,
         );
-        for (const listener of connectionListeners)
-          listener({ status: "connected" });
       } catch (error) {
         compatibilityError = error as PaseoRuntimeError;
         void closeRuntime();
+        return;
       }
+      host = acceptedHost;
+      notifyConnectionListeners({ status: "connected" });
     }),
   );
 
@@ -286,12 +308,13 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
     getHost: () => host,
     subscribeConnection(listener) {
       if (disposed) {
-        listener({ status: "disposed" });
+        notifyConnectionListener(listener, { status: "disposed" });
         return () => {};
       }
       connectionListeners.add(listener);
       const state = client.getConnectionState();
-      listener(
+      notifyConnectionListener(
+        listener,
         state.status === "connected" && host === null
           ? { status: "connecting", attempt: 0 }
           : state,
