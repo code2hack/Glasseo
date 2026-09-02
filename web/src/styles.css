@@ -15,6 +15,29 @@ body {
   text-align: center;
 }
 
+#hosts {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+#hosts h2 {
+  margin: 0;
+}
+
+#hosts ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#hosts li {
+  display: grid;
+  gap: 4px;
+}
+
 h1 {
   margin: 0 0 16px;
   font-size: 40px;

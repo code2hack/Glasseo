@@ -13,6 +13,9 @@ import {
 } from "./native/qualification";
 import { listenForSemanticInput } from "./native/semanticInput";
 import { runWebViewProbe } from "./compat/webviewProbe";
+import { HostRegistry } from "./hosts/registry";
+import { IndexedDbHostStorage } from "./hosts/storage";
+import { PairingController, type PairingState } from "./hosts/pairing";
 
 const status = document.querySelector<HTMLElement>("#status");
 const content = document.querySelector<HTMLElement>("main");
@@ -142,12 +145,64 @@ async function main() {
     }),
   );
   postNative({ type: "hello" });
+  const registry = new HostRegistry(new IndexedDbHostStorage());
+  const pairing = new PairingController(registry);
+  setupHostAcceptance(registry, pairing);
+  void registry.restore();
   const result = await runWebViewProbe();
   postNative({ type: "probe-result", ...result });
   if (status)
     status.textContent = result.passed
       ? "Device ready"
       : "Compatibility check failed";
+}
+
+function setupHostAcceptance(
+  registry: HostRegistry,
+  pairing: PairingController,
+): void {
+  const hosts = document.querySelector<HTMLElement>("#hosts");
+  if (!hosts) return;
+  let pairingState: PairingState = { status: "idle" };
+  let registryState = registry.snapshot();
+  const render = () => {
+    const title = document.createElement("h2");
+    title.textContent = "Relay hosts";
+    const state = document.createElement("p");
+    state.id = "pairing-state";
+    state.textContent =
+      pairingState.status === "error"
+        ? `Pairing error: ${pairingState.code}`
+        : pairingState.status;
+    const add = document.createElement("button");
+    add.textContent = "Scan Paseo host";
+    add.disabled = ["scanning", "validating", "connecting"].includes(
+      pairingState.status,
+    );
+    add.addEventListener("click", () => pairing.start());
+    const list = document.createElement("ul");
+    for (const host of registryState.hosts) {
+      const row = document.createElement("li");
+      row.textContent = `${host.profile.hostname ?? host.profile.serverId} · ${host.profile.serverId} · ${host.status}`;
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.addEventListener(
+        "click",
+        () => void registry.remove(host.profile.serverId),
+      );
+      row.append(remove);
+      list.append(row);
+    }
+    hosts.replaceChildren(title, state, add, list);
+  };
+  pairing.subscribe((value) => {
+    pairingState = value;
+    render();
+  });
+  registry.subscribe((value) => {
+    registryState = value;
+    render();
+  });
 }
 
 void main().catch((error: unknown) => {

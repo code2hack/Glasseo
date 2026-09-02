@@ -9,6 +9,8 @@ import org.junit.Test
 class BridgeMessageTest {
     @Test fun parsesKnownMessages() {
         assertEquals(BridgeMessage.Hello, BridgeMessage.parse("{\"type\":\"hello\"}"))
+        assertEquals(BridgeMessage.ScannerStart, BridgeMessage.parse("{\"type\":\"scanner-start\"}"))
+        assertEquals(BridgeMessage.ScannerCancel, BridgeMessage.parse("{\"type\":\"scanner-cancel\"}"))
         assertTrue((BridgeMessage.parse(passingProbe()) as BridgeMessage.ProbeResult).isPassing())
         assertEquals(
             BridgeMessage.SemanticReceived(SemanticControl.PRIMARY, SemanticAction.SHORT, 7),
@@ -45,6 +47,7 @@ class BridgeMessageTest {
             "{}",
             "{\"type\":\"other\"}",
             "{\"type\":\"hello\",\"extra\":true}",
+            "{\"type\":\"scanner-start\",\"extra\":true}",
             "{\"type\":\"semantic-received\",\"control\":\"OTHER\",\"action\":\"SHORT\",\"interactionId\":7}",
             "{\"type\":\"semantic-received\",\"control\":\"PRIMARY\",\"action\":\"SHORT\",\"interactionId\":0}",
             "{\"type\":\"qualification-start\",\"mode\":\"OTHER\"}",
@@ -80,4 +83,5 @@ class BridgeMessageTest {
         val details = BridgeMessage.REQUIRED_CHECKS.joinToString(",") { "\"$it\":\"PASS\"" }
         return "{\"type\":\"probe-result\",\"passed\":true,\"checks\":{$checks},\"details\":{$details}}"
     }
+
 }
