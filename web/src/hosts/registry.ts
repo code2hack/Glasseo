@@ -3,12 +3,15 @@ import { buildPairingCandidate, parsePairingOffer } from "./offer";
 import {
   HostError,
   hostStatus,
+  isHostDirectoryRuntime,
   profileFromAcceptedHost,
   validateStoredHostProfile,
   type HostClock,
   type HostRegistryListener,
   type HostRegistrySnapshot,
   type HostRuntime,
+  type HostRuntimeLease,
+  type HostRuntimeLeaseListener,
   type HostRuntimeFactory,
   type HostRuntimeSnapshot,
   type HostStorage,
@@ -18,6 +21,7 @@ import {
 
 type Slot = HostRuntimeSnapshot & {
   generation: number;
+  connectionEpoch: number;
   runtime: HostRuntime;
   unsubscribe: () => void;
 };
@@ -26,6 +30,7 @@ export class HostRegistry {
   private readonly slots = new Map<string, Slot>();
   private readonly pending = new Map<string, PairingCandidate>();
   private readonly listeners = new Set<HostRegistryListener>();
+  private readonly runtimeListeners = new Set<HostRuntimeLeaseListener>();
   private clientId: string | null = null;
   private clientIdPromise: Promise<string> | null = null;
   private storageErrors = 0;
@@ -57,6 +62,12 @@ export class HostRegistry {
       // Subscribers cannot affect registry control flow.
     }
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeRuntimeLeases(listener: HostRuntimeLeaseListener): () => void {
+    this.runtimeListeners.add(listener);
+    this.notifyRuntimeListener(listener);
+    return () => this.runtimeListeners.delete(listener);
   }
 
   restore(): Promise<void> {
@@ -211,12 +222,16 @@ export class HostRegistry {
       status,
       error: null,
       generation,
+      connectionEpoch: status === "online" ? 1 : 0,
       runtime,
       unsubscribe: () => {},
     };
     slot.unsubscribe = runtime.subscribeConnection((state) => {
       if (this.slots.get(profile.serverId)?.generation !== generation) return;
-      slot.status = hostStatus(state);
+      const nextStatus = hostStatus(state);
+      if (nextStatus === "online" && slot.status !== "online")
+        slot.connectionEpoch++;
+      slot.status = nextStatus;
       slot.error = null;
       this.publish();
     });
@@ -268,6 +283,29 @@ export class HostRegistry {
       } catch {
         // Subscribers cannot affect registry control flow.
       }
+    }
+    for (const listener of this.runtimeListeners)
+      this.notifyRuntimeListener(listener);
+  }
+
+  private notifyRuntimeListener(listener: HostRuntimeLeaseListener): void {
+    const leases: HostRuntimeLease[] = [];
+    for (const [serverId, slot] of this.slots) {
+      if (!isHostDirectoryRuntime(slot.runtime)) continue;
+      leases.push({
+        serverId,
+        slotGeneration: slot.generation,
+        connectionEpoch: slot.connectionEpoch,
+        status: slot.status,
+        profile: slot.profile,
+        runtime: slot.runtime,
+      });
+    }
+    leases.sort((a, b) => a.serverId.localeCompare(b.serverId));
+    try {
+      listener(leases);
+    } catch {
+      // Trusted runtime consumers remain isolated from registry ownership.
     }
   }
 }

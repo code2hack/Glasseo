@@ -16,6 +16,9 @@ import { runWebViewProbe } from "./compat/webviewProbe";
 import { HostRegistry } from "./hosts/registry";
 import { IndexedDbHostStorage } from "./hosts/storage";
 import { PairingController, type PairingState } from "./hosts/pairing";
+import { DirectoryCoordinator } from "./directory/coordinator";
+import { IndexedDbDirectoryStorage } from "./directory/storage";
+import type { GlobalAgentDirectorySnapshot } from "./directory/types";
 
 const status = document.querySelector<HTMLElement>("#status");
 const content = document.querySelector<HTMLElement>("main");
@@ -147,8 +150,12 @@ async function main() {
   postNative({ type: "hello" });
   const registry = new HostRegistry(new IndexedDbHostStorage());
   const pairing = new PairingController(registry);
-  setupHostAcceptance(registry, pairing);
-  void registry.restore();
+  const directory = new DirectoryCoordinator(
+    registry,
+    new IndexedDbDirectoryStorage(),
+  );
+  setupHostAcceptance(registry, pairing, directory);
+  void directory.restore();
   const result = await runWebViewProbe();
   postNative({ type: "probe-result", ...result });
   if (status)
@@ -160,11 +167,13 @@ async function main() {
 function setupHostAcceptance(
   registry: HostRegistry,
   pairing: PairingController,
+  directory: DirectoryCoordinator,
 ): void {
   const hosts = document.querySelector<HTMLElement>("#hosts");
   if (!hosts) return;
   let pairingState: PairingState = { status: "idle" };
   let registryState = registry.snapshot();
+  let directoryState: GlobalAgentDirectorySnapshot = directory.snapshot();
   const render = () => {
     const title = document.createElement("h2");
     title.textContent = "Relay hosts";
@@ -193,7 +202,55 @@ function setupHostAcceptance(
       row.append(remove);
       list.append(row);
     }
-    hosts.replaceChildren(title, state, add, list);
+    const directoryTitle = document.createElement("h2");
+    directoryTitle.textContent = "Directory diagnostics";
+    const directoryHosts = document.createElement("ul");
+    [...directoryState.hosts.values()].forEach((host, index) => {
+      const row = document.createElement("li");
+      row.textContent =
+        `Host ${index + 1} · ${host.status}${host.stale ? " stale" : ""} · ` +
+        `${host.projects.size} projects · ${host.workspaces.size} workspaces · ` +
+        `${host.agents.size} agents`;
+      const refresh = document.createElement("button");
+      refresh.textContent = "Refresh directory";
+      refresh.dataset.directoryRefresh = String(index);
+      refresh.addEventListener(
+        "click",
+        () => void directory.refresh(host.serverId),
+      );
+      row.append(refresh);
+      directoryHosts.append(row);
+    });
+    const ordered = document.createElement("output");
+    ordered.id = "directory-order";
+    ordered.textContent = directoryState.orderedAgents.length
+      ? directoryState.orderedAgents
+          .map((_, index) => `Agent ${index + 1}`)
+          .join(" · ")
+      : "No eligible agents";
+    const current = document.createElement("output");
+    current.id = "directory-current";
+    const currentIndex = directoryState.current
+      ? directoryState.orderedAgents.findIndex(
+          (agent) =>
+            agent.serverId === directoryState.current?.serverId &&
+            agent.agentId === directoryState.current.agentId,
+        )
+      : -1;
+    current.textContent =
+      directoryState.destination === "config"
+        ? "Destination: Config"
+        : `Destination: Agent ${currentIndex + 1}`;
+    hosts.replaceChildren(
+      title,
+      state,
+      add,
+      list,
+      directoryTitle,
+      directoryHosts,
+      ordered,
+      current,
+    );
   };
   pairing.subscribe((value) => {
     pairingState = value;
@@ -201,6 +258,10 @@ function setupHostAcceptance(
   });
   registry.subscribe((value) => {
     registryState = value;
+    render();
+  });
+  directory.subscribe((value) => {
+    directoryState = value;
     render();
   });
 }

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   createPaseoRuntime,
   PaseoRuntimeError,
+  type PaseoDirectoryEvent,
   type PaseoConnectionState,
   type PaseoHostInfo,
 } from "../src/paseo/adapter";
@@ -371,6 +372,47 @@ test("throwing registry subscriber cannot starve observers or transactions", asy
   assert.equal(factory.runtimes[0]?.closed, true);
 });
 
+test("directory runtime leases fence reconnect, failed removal, and removal", async () => {
+  const storage = new MemoryStorage([profile("alpha")]);
+  const factory = new FakeFactory();
+  const registry = new HostRegistry(storage, factory.create);
+  const observed: Array<[number, number, string] | null> = [];
+  registry.subscribeRuntimeLeases(() => {
+    throw new Error("fixture lease subscriber");
+  });
+  registry.subscribeRuntimeLeases((leases) => {
+    const lease = leases[0];
+    observed.push(
+      lease
+        ? [lease.slotGeneration, lease.connectionEpoch, lease.status]
+        : null,
+    );
+  });
+  await registry.restore();
+  const runtime = factory.runtimes[0]!;
+  const first = observed.at(-1)!;
+  assert.deepEqual(first && first.slice(1), [1, "online"]);
+
+  runtime.emit({ status: "disconnected", reason: "fixture" });
+  runtime.emit({ status: "connecting", attempt: 1 });
+  runtime.emit({ status: "connected" });
+  const reconnected = observed.at(-1)!;
+  assert.deepEqual(reconnected && reconnected.slice(1), [2, "online"]);
+  assert.equal(reconnected?.[0], first?.[0]);
+
+  storage.failDelete = true;
+  await assert.rejects(registry.remove("alpha"), hasCode("storage_error"));
+  assert.equal(observed.at(-1)?.[0], first?.[0]);
+  storage.failDelete = false;
+  await registry.remove("alpha");
+  assert.equal(observed.at(-1), null);
+
+  await registry.add(offer("beta", "relay.paseo.sh:443"));
+  const added = observed.at(-1)!;
+  assert.deepEqual(added && added.slice(1), [1, "online"]);
+  assert.notEqual(added?.[0], first?.[0]);
+});
+
 class MemoryStorage implements HostStorage {
   profiles = new Map<string, unknown>();
   clientId: string | null = null;
@@ -456,6 +498,31 @@ class FakeRuntime implements HostRuntime {
   }
   rejectConnect() {
     this.reject(new Error("offline"));
+  }
+  getHost() {
+    return this.closed ? null : hostInfo(this.serverId);
+  }
+  async listProjects() {
+    return { requestId: "projects", projects: [] };
+  }
+  async listWorkspaces() {
+    return {
+      requestId: "workspaces",
+      entries: [],
+      emptyProjects: [],
+      pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+    };
+  }
+  async listAgents() {
+    return {
+      requestId: "agents",
+      entries: [],
+      pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+    };
+  }
+  subscribeDirectory(_listener: (event: PaseoDirectoryEvent) => void) {
+    void _listener;
+    return () => {};
   }
 }
 
