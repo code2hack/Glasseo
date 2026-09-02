@@ -19,11 +19,14 @@ import type {
 } from "../src/directory/types";
 import type {
   HostDirectoryRuntime,
+  HostStorage,
   HostRuntimeLease,
   HostRuntimeLeaseListener,
   StoredHostProfile,
 } from "../src/hosts/types";
+import { HostRegistry } from "../src/hosts/registry";
 import type {
+  PaseoConnectionState,
   PaseoAgentEntry,
   PaseoAgentRecord,
   PaseoAgents,
@@ -365,6 +368,61 @@ test("failed removal retains the connected directory subscription", async () => 
   assert.equal(hostSyncState(directory.snapshot(), "alpha")?.status, "ready");
 });
 
+test("real registry failed removal preserves live directory until successful retry", async () => {
+  const alpha = readyRuntime("alpha", [
+    agentEntry("selected", "2026-09-03T02:00:00Z"),
+  ]);
+  const beta = readyRuntime("beta", [
+    agentEntry("fallback", "2026-09-03T01:00:00Z"),
+  ]);
+  const profiles = new FailingHostStorage([profile("alpha"), profile("beta")]);
+  const registry = new HostRegistry(profiles, (options) =>
+    options.expectedServerId === "alpha" ? alpha : beta,
+  );
+  const cache = new MemoryDirectoryStorage();
+  const directory = new DirectoryCoordinator(registry, cache);
+  const transitions: string[] = [];
+  registry.subscribe((snapshot) => {
+    const host = snapshot.hosts.find(
+      ({ profile: stored }) => stored.serverId === "alpha",
+    );
+    if (host) transitions.push(host.status);
+  });
+  await directory.restore();
+  await tick();
+  assert.equal(directory.selectAgent(agentKey("alpha", "selected")), true);
+  assert.equal(alpha.subscriberCount, 1);
+  assert.equal(cache.hosts.has("alpha"), true);
+
+  profiles.failDelete = true;
+  await assert.rejects(registry.remove("alpha"), {
+    name: "HostError",
+    code: "storage_error",
+  });
+  assert.deepEqual(transitions.slice(-2), ["removing", "error"]);
+  assert.equal(hostSyncState(directory.snapshot(), "alpha")?.status, "ready");
+  assert.equal(alpha.subscriberCount, 1);
+  alpha.emit(agentUpsert("live", "2026-09-03T03:00:00Z"));
+  assert.equal(
+    directory.snapshot().hosts.get("alpha")?.agents.has("live"),
+    true,
+  );
+
+  profiles.failDelete = false;
+  await registry.remove("alpha");
+  await tick();
+  assert.equal(alpha.closed, true);
+  assert.equal(alpha.subscriberCount, 0);
+  assert.equal(directory.snapshot().hosts.has("alpha"), false);
+  assert.equal(cache.hosts.has("alpha"), false);
+  assert.deepEqual(directory.snapshot().current, agentKey("beta", "fallback"));
+  alpha.emitStale(agentUpsert("late", "2026-09-03T04:00:00Z"));
+  assert.equal(directory.snapshot().hosts.has("alpha"), false);
+  assert.deepEqual(orderedAgentKeys(directory.snapshot()), [
+    agentKey("beta", "fallback"),
+  ]);
+});
+
 test("cache restores selection before delayed refresh and removal cleans only its host", async () => {
   const storage = new MemoryDirectoryStorage();
   storage.hosts.set(
@@ -501,6 +559,11 @@ class FakeDirectoryRuntime implements HostDirectoryRuntime {
   agentRequests: unknown[] = [];
   listAgentsImpl: ((options: unknown) => Promise<PaseoAgents>) | null = null;
   private listeners = new Set<(event: PaseoDirectoryEvent) => void>();
+  private staleListeners = new Set<(event: PaseoDirectoryEvent) => void>();
+  private connectionListeners = new Set<
+    (state: PaseoConnectionState) => void
+  >();
+  closed = false;
   constructor(readonly serverId: string) {}
   get subscriberCount() {
     return this.listeners.size;
@@ -513,6 +576,18 @@ class FakeDirectoryRuntime implements HostDirectoryRuntime {
       capabilities: {},
       features: {},
     };
+  }
+  async connect() {
+    for (const listener of this.connectionListeners)
+      listener({ status: "connected" });
+    return this.getHost();
+  }
+  async close() {
+    this.closed = true;
+  }
+  subscribeConnection(listener: (state: PaseoConnectionState) => void) {
+    this.connectionListeners.add(listener);
+    return () => this.connectionListeners.delete(listener);
   }
   async listProjects() {
     return this.projects;
@@ -534,11 +609,37 @@ class FakeDirectoryRuntime implements HostDirectoryRuntime {
   }
   subscribeDirectory(listener: (event: PaseoDirectoryEvent) => void) {
     this.listeners.add(listener);
+    this.staleListeners.add(listener);
     return () => this.listeners.delete(listener);
   }
   emit(event: PaseoDirectoryEvent) {
     for (const listener of this.listeners) listener(event);
   }
+  emitStale(event: PaseoDirectoryEvent) {
+    for (const listener of this.staleListeners) listener(event);
+  }
+}
+
+class FailingHostStorage implements HostStorage {
+  readonly profiles = new Map<string, StoredHostProfile>();
+  failDelete = false;
+  constructor(profiles: StoredHostProfile[]) {
+    for (const stored of profiles) this.profiles.set(stored.serverId, stored);
+  }
+  async loadProfiles() {
+    return [...this.profiles.values()];
+  }
+  async putProfile(stored: StoredHostProfile) {
+    this.profiles.set(stored.serverId, stored);
+  }
+  async deleteProfile(serverId: string) {
+    if (this.failDelete) throw new Error("delete failed");
+    this.profiles.delete(serverId);
+  }
+  async getClientId() {
+    return "0123456789abcdef0123456789abcdef";
+  }
+  async putClientId() {}
 }
 
 class MemoryDirectoryStorage implements DirectoryStorage {

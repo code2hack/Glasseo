@@ -160,11 +160,11 @@ export class DirectoryCoordinator {
         if (!previous || !sameToken(token(previous), token(lease)))
           void this.startSync(lease);
       } else if (
-        lease.status === "error" &&
+        (lease.status === "removing" || lease.status === "error") &&
         state.snapshot.status === "ready" &&
         sameToken(state.snapshot.sourceToken, token(lease))
       ) {
-        // A failed profile deletion retains #5's connected runtime and lease.
+        // Removal is provisional until #5 drops the lease after persisted deletion.
       } else {
         state.unsubscribe();
         state.unsubscribe = () => {};
@@ -447,7 +447,8 @@ export class DirectoryCoordinator {
       !!lease &&
       sameToken(source, token(lease)) &&
       (lease.status === "online" ||
-        (lease.status === "error" && state?.status === "ready"))
+        ((lease.status === "removing" || lease.status === "error") &&
+          state?.status === "ready"))
     );
   }
 
