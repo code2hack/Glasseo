@@ -186,6 +186,31 @@ test("visible progress and settle prompts are exact", () => {
   assert.equal(qualificationHeading(up), "7/10 UP");
 });
 
+test("paused target snapshots remain visible and idempotent across replay", () => {
+  const paused = snapshot({
+    revision: 12,
+    stepIndex: 6,
+    stepName: "UP",
+    paused: true,
+    prompt: "Qualification paused — resume with ADB",
+  });
+  const decoded = decodeQualificationMessage(JSON.stringify(paused));
+  assert.equal(decoded.type, "qualification-state");
+  assert.equal(decoded.paused, true);
+
+  const rendered = reduceQualification(
+    { view: "landing" },
+    { type: "native-state", snapshot: paused },
+  );
+  const replayed = reduceQualification(rendered, {
+    type: "native-state",
+    snapshot: paused,
+  });
+  assert.strictEqual(replayed, rendered);
+  assert.equal(replayed.stepName, "UP");
+  assert.equal(replayed.prompt, "Qualification paused — resume with ADB");
+});
+
 function snapshot(overrides: Record<string, unknown> = {}) {
   return {
     type: "qualification-state" as const,
@@ -203,6 +228,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
     description: "Briefly use the intended PRIMARY control",
     prompt: "Perform the intended action",
     error: null,
+    paused: false,
     complete: false,
     ...overrides,
   };

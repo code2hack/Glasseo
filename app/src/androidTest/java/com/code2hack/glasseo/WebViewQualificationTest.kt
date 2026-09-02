@@ -1,7 +1,9 @@
 package com.code2hack.glasseo
 
+import android.content.Intent
 import android.util.DisplayMetrics
 import androidx.test.core.app.ActivityScenario
+import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -125,6 +127,87 @@ class WebViewQualificationTest {
         }
     }
 
+    @Test fun pausedTargetSurvivesRecoveryInterceptsInputAndRequiresDebugResume() {
+        val launchIntent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
+            .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
+            .putExtra(MainActivity.QUALIFICATION_PAUSE_STEP_EXTRA, QualificationStep.UP.name)
+        ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
+            assertNotNull(ProbeState.await(60))
+            lateinit var application: GlasseoApplication
+            scenario.onActivity {
+                application = it.application as GlasseoApplication
+                it.startQualificationForTest(QualificationStep.UP)
+                assertEquals(
+                    setOf(QualificationStep.SHORT_COMMAND, QualificationStep.LONG_COMMAND),
+                    application.qualificationSession!!.wizard.results.keys,
+                )
+            }
+            val paused = awaitState(
+                scenario,
+                QualificationStep.UP,
+                QualificationPhase.AWAITING_FIRST,
+                armed = false,
+                paused = true,
+            )
+            assertEquals("7/10 UP|${QualificationSession.PAUSED_PROMPT}", readDom(scenario))
+
+            scenario.onActivity {
+                assertTrue(application.orderedInterception.started)
+                assertFalse(it.submitQualificationForTest(longCommand()))
+            }
+            assertEquals(
+                paused.revision,
+                awaitState(
+                    scenario,
+                    QualificationStep.UP,
+                    QualificationPhase.AWAITING_FIRST,
+                    armed = false,
+                    paused = true,
+                ).revision,
+            )
+
+            scenario.onActivity { it.reloadQualificationForTest() }
+            assertEquals(
+                paused.revision,
+                awaitState(
+                    scenario,
+                    QualificationStep.UP,
+                    QualificationPhase.AWAITING_FIRST,
+                    armed = false,
+                    paused = true,
+                ).revision,
+            )
+
+            scenario.recreate()
+            assertTrue((application.orderedInterception.started))
+            assertEquals(
+                paused.revision,
+                awaitState(
+                    scenario,
+                    QualificationStep.UP,
+                    QualificationPhase.AWAITING_FIRST,
+                    armed = false,
+                    paused = true,
+                ).revision,
+            )
+
+            ActivityScenario.launch<MainActivity>(
+                Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
+                    .putExtra(MainActivity.QUALIFICATION_RESUME_EXTRA, true),
+            ).use { resumedScenario ->
+                val resumed = awaitState(
+                    resumedScenario,
+                    QualificationStep.UP,
+                    QualificationPhase.AWAITING_FIRST,
+                    armed = true,
+                    paused = false,
+                )
+                assertEquals(paused.revision + 1, resumed.revision)
+                assertEquals("7/10 UP|Perform the intended action", readDom(resumedScenario))
+            }
+        }
+    }
+
     private fun submitAfterReady(
         scenario: ActivityScenario<MainActivity>,
         step: QualificationStep,
@@ -152,6 +235,7 @@ class WebViewQualificationTest {
         step: QualificationStep,
         phase: QualificationPhase,
         armed: Boolean,
+        paused: Boolean? = null,
     ): QualificationSnapshot {
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
@@ -162,7 +246,9 @@ class WebViewQualificationTest {
                 snapshot = session?.snapshot
                 isArmed = session?.armed == true
             }
-            if (snapshot?.step == step && snapshot?.phase == phase && isArmed == armed) return snapshot!!
+            if (snapshot?.step == step && snapshot?.phase == phase && isArmed == armed &&
+                (paused == null || snapshot?.paused == paused)
+            ) return snapshot!!
             Thread.sleep(50)
         }
         throw AssertionError("Native state did not reach $step $phase armed=$armed")

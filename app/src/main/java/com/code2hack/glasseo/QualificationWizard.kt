@@ -34,6 +34,13 @@ data class OperationResult(
     val unacceptableSideEffect: Boolean = false,
 )
 
+val ACCEPTED_BUILT_IN_OPERATION_RESULTS: Map<QualificationStep, OperationResult> = listOf(
+    QualificationStep.SHORT_COMMAND,
+    QualificationStep.LONG_COMMAND,
+).associateWith { step ->
+    OperationResult(step, OperationVerdict.PASS, SuppressionOutcome.SUCCEEDED)
+}
+
 data class QualificationState(
     val step: QualificationStep,
     val prompt: String,

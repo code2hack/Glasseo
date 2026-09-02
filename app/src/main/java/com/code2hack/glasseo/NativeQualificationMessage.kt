@@ -21,6 +21,7 @@ object NativeQualificationMessage {
         .put("description", state.step.description)
         .put("prompt", state.prompt)
         .put("error", state.error ?: JSONObject.NULL)
+        .put("paused", state.paused)
         .put("complete", state.complete)
         .toString()
 }

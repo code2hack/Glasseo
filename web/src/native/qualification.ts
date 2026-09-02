@@ -34,6 +34,7 @@ export type QualificationState = {
   description?: string;
   prompt?: string;
   error?: string | null;
+  paused?: boolean;
   complete?: boolean;
 };
 
@@ -65,6 +66,7 @@ export type QualificationSnapshot = Omit<
   description: string;
   prompt: string;
   error: string | null;
+  paused: boolean;
   complete: boolean;
 };
 
@@ -124,7 +126,7 @@ export function decodeQualificationMessage(
   }
   if (
     message.type === "qualification-state" &&
-    Object.keys(message).length === 16 &&
+    Object.keys(message).length === 17 &&
     typeof message.sessionId === "string" &&
     message.sessionId.length > 0 &&
     (message.mode === "BUILT_IN" || message.mode === "HID") &&
@@ -152,6 +154,7 @@ export function decodeQualificationMessage(
     typeof message.description === "string" &&
     typeof message.prompt === "string" &&
     (message.error === null || typeof message.error === "string") &&
+    typeof message.paused === "boolean" &&
     typeof message.complete === "boolean"
   ) {
     return message as NativeQualificationMessage;

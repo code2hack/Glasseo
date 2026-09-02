@@ -8,6 +8,11 @@ enum class QualificationPhase {
     STEP_CONFIRMED,
 }
 
+data class QualificationPauseTarget(
+    val step: QualificationStep,
+    val phase: QualificationPhase = QualificationPhase.AWAITING_FIRST,
+)
+
 data class QualificationSnapshot(
     val sessionId: String,
     val mode: QualificationMode,
@@ -21,6 +26,7 @@ data class QualificationSnapshot(
     val settleDeadlineMillis: Long?,
     val prompt: String,
     val error: String?,
+    val paused: Boolean,
     val complete: Boolean,
 )
 
@@ -55,6 +61,7 @@ class QualificationSession(
     startIndex: Int = 0,
     initialResults: Map<QualificationStep, OperationResult> = emptyMap(),
     private val nowMillis: () -> Long,
+    private val pauseAt: QualificationPauseTarget? = null,
 ) {
     val wizard = QualificationWizard(mode, bindings, startIndex, initialResults)
     private var revision = 1L
@@ -62,6 +69,8 @@ class QualificationSession(
     private var nextOperationId = 1L
     private var pendingOperation: QualificationOperation? = null
     private var pendingToken: QualificationFinalizerToken? = null
+    private var paused = false
+    private var pauseBoundaryReached = false
 
     var armed = false
         private set
@@ -140,6 +149,25 @@ class QualificationSession(
         ) {
             return AcknowledgementResult(false, false, armed)
         }
+        if (!pauseBoundaryReached && pauseAt?.let { target ->
+                snapshot.step == target.step && snapshot.phase == target.phase
+            } == true
+        ) {
+            pauseBoundaryReached = true
+            paused = true
+            armed = false
+            mutate(
+                snapshot.phase,
+                snapshot.attempt,
+                snapshot.operationId,
+                snapshot.candidateDisplay,
+                snapshot.suppressionResult,
+                snapshot.settleDeadlineMillis,
+                error = snapshot.error,
+            )
+            return AcknowledgementResult(true, true, false)
+        }
+        if (paused) return AcknowledgementResult(true, false, false)
         if (snapshot.phase == QualificationPhase.STEP_CONFIRMED && !snapshot.complete) {
             mutate(QualificationPhase.AWAITING_FIRST, 0, null, null, null, null)
             return AcknowledgementResult(true, true, false)
@@ -163,6 +191,22 @@ class QualificationSession(
 
     fun suspendCapture() {
         armed = false
+    }
+
+    fun resume(): Boolean {
+        if (!paused) return false
+        paused = false
+        armed = false
+        mutate(
+            snapshot.phase,
+            snapshot.attempt,
+            snapshot.operationId,
+            snapshot.candidateDisplay,
+            snapshot.suppressionResult,
+            snapshot.settleDeadlineMillis,
+            error = snapshot.error,
+        )
+        return true
     }
 
     private fun mutate(
@@ -208,22 +252,27 @@ class QualificationSession(
         candidateDisplay,
         suppressionResult,
         settleDeadlineMillis,
-        prompt ?: when (phase) {
-            QualificationPhase.SETTLING_FIRST -> "Captured — checking…"
-            QualificationPhase.SETTLING_SECOND -> "Captured — confirming…"
+        prompt ?: when {
+            paused -> PAUSED_PROMPT
+            phase == QualificationPhase.SETTLING_FIRST -> "Captured — checking…"
+            phase == QualificationPhase.SETTLING_SECOND -> "Captured — confirming…"
             else -> wizard.state.prompt
         },
         error,
+        paused,
         wizard.state.complete,
     )
 
-    private fun ignoreReason() = when (snapshot.phase) {
-        QualificationPhase.SETTLING_FIRST, QualificationPhase.SETTLING_SECOND -> "settling"
-        QualificationPhase.STEP_CONFIRMED -> "transition"
+    private fun ignoreReason() = when {
+        paused -> "paused"
+        snapshot.phase == QualificationPhase.SETTLING_FIRST ||
+            snapshot.phase == QualificationPhase.SETTLING_SECOND -> "settling"
+        snapshot.phase == QualificationPhase.STEP_CONFIRMED -> "transition"
         else -> "snapshot-unacknowledged"
     }
 
     companion object {
         const val SETTLE_MILLIS = 1_200L
+        const val PAUSED_PROMPT = "Qualification paused — resume with ADB"
     }
 }

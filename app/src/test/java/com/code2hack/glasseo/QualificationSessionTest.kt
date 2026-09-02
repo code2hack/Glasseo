@@ -83,6 +83,106 @@ class QualificationSessionTest {
         assertEquals(QualificationStep.LONG_COMMAND, session.snapshot.step)
     }
 
+    @Test fun acknowledgedTargetPausesUntilTheResumedRevisionIsAcknowledged() {
+        val pausedSession = QualificationSession(
+            QualificationMode.BUILT_IN,
+            sessionId = "paused-session",
+            startIndex = QualificationStep.UP.ordinal,
+            pauseAt = QualificationPauseTarget(QualificationStep.UP, QualificationPhase.AWAITING_FIRST),
+            nowMillis = clock::now,
+        )
+        val targetAck = pausedSession.snapshot.ack()
+
+        val pause = pausedSession.acknowledge(targetAck)
+
+        assertTrue(pause.accepted)
+        assertTrue(pause.snapshotChanged)
+        assertTrue(pausedSession.snapshot.paused)
+        assertFalse(pausedSession.armed)
+        assertEquals(targetAck.revision + 1, pausedSession.snapshot.revision)
+        val pausedRevision = pausedSession.snapshot.revision
+        assertEquals(
+            "paused",
+            (pausedSession.capture(operation(BehaviorClass.DIRECTIONAL, "up")) as CaptureAdmission.Ignored).reason,
+        )
+
+        pausedSession.suspendCapture()
+        val replay = pausedSession.acknowledge(pausedSession.snapshot.ack())
+        assertTrue(replay.accepted)
+        assertFalse(replay.snapshotChanged)
+        assertFalse(replay.armed)
+        assertEquals(pausedRevision, pausedSession.snapshot.revision)
+
+        assertTrue(pausedSession.resume())
+        assertFalse(pausedSession.snapshot.paused)
+        assertFalse(pausedSession.armed)
+        assertEquals(pausedRevision + 1, pausedSession.snapshot.revision)
+        assertFalse(pausedSession.acknowledge(targetAck).accepted)
+        assertTrue(pausedSession.acknowledge(pausedSession.snapshot.ack()).armed)
+        assertTrue(
+            pausedSession.capture(operation(BehaviorClass.DIRECTIONAL, "up")) is CaptureAdmission.Accepted,
+        )
+    }
+
+    @Test fun finalStepConfirmedCanBeAnAcknowledgedPauseTarget() {
+        val finalSession = QualificationSession(
+            QualificationMode.BUILT_IN,
+            sessionId = "final-session",
+            startIndex = QualificationStep.RIGHT.ordinal,
+            nowMillis = clock::now,
+            pauseAt = QualificationPauseTarget(QualificationStep.RIGHT, QualificationPhase.STEP_CONFIRMED),
+        )
+        val right = operation(BehaviorClass.DIRECTIONAL, "right")
+        finalSession.acknowledge(finalSession.snapshot.ack())
+        val first = finalSession.capture(right) as CaptureAdmission.Accepted
+        clock.advance(1_200)
+        assertTrue(finalSession.finalize(first.token))
+        finalSession.acknowledge(finalSession.snapshot.ack())
+        val second = finalSession.capture(right) as CaptureAdmission.Accepted
+        clock.advance(1_200)
+        assertTrue(finalSession.finalize(second.token))
+        assertTrue(finalSession.snapshot.complete)
+        assertEquals(QualificationPhase.STEP_CONFIRMED, finalSession.snapshot.phase)
+
+        val targetRevision = finalSession.snapshot.revision
+        val pause = finalSession.acknowledge(finalSession.snapshot.ack())
+
+        assertTrue(pause.snapshotChanged)
+        assertTrue(finalSession.snapshot.paused)
+        assertFalse(finalSession.armed)
+        assertEquals(targetRevision + 1, finalSession.snapshot.revision)
+    }
+
+    @Test fun nonFinalStepConfirmedPausesBeforeAdvancing() {
+        val pausedSession = QualificationSession(
+            QualificationMode.BUILT_IN,
+            sessionId = "confirmed-session",
+            startIndex = QualificationStep.SHORT_COMMAND.ordinal,
+            nowMillis = clock::now,
+            pauseAt = QualificationPauseTarget(
+                QualificationStep.LONG_COMMAND,
+                QualificationPhase.STEP_CONFIRMED,
+            ),
+        )
+        pausedSession.acknowledge(pausedSession.snapshot.ack())
+        val first = pausedSession.capture(shortCommand()) as CaptureAdmission.Accepted
+        clock.advance(1_200)
+        assertTrue(pausedSession.finalize(first.token))
+        pausedSession.acknowledge(pausedSession.snapshot.ack())
+        val second = pausedSession.capture(shortCommand()) as CaptureAdmission.Accepted
+        clock.advance(1_200)
+        assertTrue(pausedSession.finalize(second.token))
+
+        val targetRevision = pausedSession.snapshot.revision
+        val pause = pausedSession.acknowledge(pausedSession.snapshot.ack())
+
+        assertTrue(pause.snapshotChanged)
+        assertEquals(QualificationStep.LONG_COMMAND, pausedSession.snapshot.step)
+        assertEquals(QualificationPhase.STEP_CONFIRMED, pausedSession.snapshot.phase)
+        assertTrue(pausedSession.snapshot.paused)
+        assertEquals(targetRevision + 1, pausedSession.snapshot.revision)
+    }
+
     private fun captureAndSettle(operation: QualificationOperation) {
         val accepted = session.capture(operation) as CaptureAdmission.Accepted
         assertTrue(session.snapshot.phase == QualificationPhase.SETTLING_FIRST ||

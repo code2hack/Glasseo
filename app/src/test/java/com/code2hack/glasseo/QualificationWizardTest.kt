@@ -101,6 +101,24 @@ class QualificationWizardTest {
         assertEquals(BuiltInCapability.AVAILABLE_SAFE, capabilities[SemanticControl.SECONDARY])
     }
 
+    @Test fun acceptedCommandEvidenceDerivesTheSuppressedCommandCapability() {
+        assertEquals(
+            setOf(QualificationStep.SHORT_COMMAND, QualificationStep.LONG_COMMAND),
+            ACCEPTED_BUILT_IN_OPERATION_RESULTS.keys,
+        )
+        ACCEPTED_BUILT_IN_OPERATION_RESULTS.values.forEach { result ->
+            assertEquals(OperationVerdict.PASS, result.verdict)
+            assertEquals(SuppressionOutcome.SUCCEEDED, result.suppression)
+            assertTrue(result.deterministicDelivery)
+            assertEquals(1, result.semanticBehaviorCount)
+            assertFalse(result.unacceptableSideEffect)
+        }
+        assertEquals(
+            BuiltInCapability.AVAILABLE_WITH_SUPPRESSION,
+            deriveCapabilities(ACCEPTED_BUILT_IN_OPERATION_RESULTS)[SemanticControl.COMMAND],
+        )
+    }
+
     private fun complete(wizard: QualificationWizard, identity: HidPhysicalIdentity, behavior: BehaviorClass) {
         val operation = hid(identity, behavior)
         wizard.capture(operation)

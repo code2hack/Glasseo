@@ -62,4 +62,38 @@ class BroadcastInterceptionTest {
             GlasseoApplication.ORDERED_CONTROL_ACTIONS,
         )
     }
+
+    @Test fun persistentOrderedInterceptionRemainsAbortableWhileQualificationIsPaused() {
+        val session = QualificationSession(
+            QualificationMode.BUILT_IN,
+            sessionId = "paused-session",
+            startIndex = QualificationStep.UP.ordinal,
+            nowMillis = { 10_000L },
+            pauseAt = QualificationPauseTarget(QualificationStep.UP, QualificationPhase.AWAITING_FIRST),
+        )
+        session.acknowledge(
+            QualificationRenderAck(
+                session.snapshot.sessionId,
+                session.snapshot.revision,
+                session.snapshot.step.ordinal,
+                session.snapshot.phase,
+            ),
+        )
+        val pausedRevision = session.snapshot.revision
+        val state = PersistentOrderedBroadcastState(GlasseoApplication.ORDERED_CONTROL_ACTIONS)
+        state.initialize()
+
+        val observation = state.receive(
+            "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS",
+            flags = 0x50000010,
+            ordered = true,
+            wizardStep = session.snapshot.step,
+        )!!
+
+        assertTrue(session.snapshot.paused)
+        assertFalse(session.armed)
+        assertTrue(observation.abortAttempted)
+        assertEquals(QualificationStep.UP, observation.wizardStep)
+        assertEquals(pausedRevision, session.snapshot.revision)
+    }
 }

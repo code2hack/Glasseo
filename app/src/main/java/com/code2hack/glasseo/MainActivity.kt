@@ -2,6 +2,7 @@ package com.code2hack.glasseo
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.graphics.Bitmap
@@ -95,10 +96,22 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         }
     }
     private var webReady = false
+    private val debuggable by lazy { applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 }
     private val captureInput by lazy {
-        applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 && intent.getBooleanExtra("input_capture", false)
+        debuggable && intent.getBooleanExtra(INPUT_CAPTURE_EXTRA, false)
     }
     private val consumeUnmapped by lazy { captureInput && intent.getBooleanExtra("consume_input", false) }
+    private val qualificationPauseTarget by lazy {
+        if (!captureInput) return@lazy null
+        val step = intent.getStringExtra(QUALIFICATION_PAUSE_STEP_EXTRA) ?: return@lazy null
+        val phase = intent.getStringExtra(QUALIFICATION_PAUSE_PHASE_EXTRA)
+            ?: QualificationPhase.AWAITING_FIRST.name
+        runCatching {
+            QualificationPauseTarget(QualificationStep.valueOf(step), QualificationPhase.valueOf(phase))
+        }.onFailure {
+            trace("qualification-pause-target-rejected", "step=$step phase=$phase")
+        }.getOrNull()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,6 +121,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             session.suspendCapture()
             hidQualificationCapture = if (session.mode == QualificationMode.HID) HidQualificationCapture() else null
         }
+        if (debuggable && intent.getBooleanExtra(QUALIFICATION_RESUME_EXTRA, false)) resumeQualification()
         root = FrameLayout(this).also { setContentView(it) }
         webView = WebView(this)
         root.addView(webView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -126,6 +140,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         super.onResume()
         trace("lifecycle", "resume")
         if (webReady) postQualificationState("resume")
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (debuggable && intent.getBooleanExtra(QUALIFICATION_RESUME_EXTRA, false)) {
+            resumeQualification()
+        }
     }
 
     override fun onPause() {
@@ -346,7 +367,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun startQualification(mode: QualificationMode) {
         clearQualificationCheckpoint()
-        glasseoApplication.startQualification(mode)
+        glasseoApplication.startQualification(mode, pauseAt = qualificationPauseTarget)
         hidQualificationCapture = if (mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
         publishQualificationMutation("start")
@@ -354,7 +375,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     private fun restoreQualification(checkpoint: QualificationCheckpoint) {
-        glasseoApplication.restoreQualification(checkpoint)
+        glasseoApplication.restoreQualification(checkpoint, qualificationPauseTarget)
         hidQualificationCapture = if (checkpoint.mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
         publishQualificationMutation("restore")
@@ -614,7 +635,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     internal fun startQualificationForTest(step: QualificationStep) {
         clearQualificationCheckpoint()
-        glasseoApplication.startQualification(QualificationMode.BUILT_IN, step.ordinal)
+        glasseoApplication.startQualification(QualificationMode.BUILT_IN, step.ordinal, qualificationPauseTarget)
         prepareQualificationStep()
         publishQualificationMutation("test-start")
     }
@@ -637,6 +658,16 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     internal fun reloadQualificationForTest() {
         qualificationSession?.suspendCapture()
         webView.reload()
+    }
+
+    private fun resumeQualification() {
+        val session = qualificationSession ?: return
+        if (session.resume()) {
+            publishQualificationMutation("debug-resume")
+            trace("qualification-capture-resumed", "source=adb ${session.snapshot.telemetry()}")
+        } else {
+            traceQualificationIgnored(session, "resume-not-paused")
+        }
     }
 
     internal fun readQualificationDomForTest(callback: (String) -> Unit) {
@@ -696,7 +727,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun QualificationSnapshot.telemetry() =
         "sessionId=$sessionId revision=$revision step=${step.name} phase=$phase attempt=$attempt " +
-            "operationId=$operationId armed=${qualificationSession?.armed}"
+            "operationId=$operationId paused=$paused armed=${qualificationSession?.armed}"
 
     private fun KeyEvent.hidIdentity(): HidPhysicalIdentity {
         val inputDevice = device
@@ -748,6 +779,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     companion object {
+        const val INPUT_CAPTURE_EXTRA = "input_capture"
+        const val QUALIFICATION_PAUSE_STEP_EXTRA = "qualification_pause_at_step"
+        const val QUALIFICATION_PAUSE_PHASE_EXTRA = "qualification_pause_at_phase"
+        const val QUALIFICATION_RESUME_EXTRA = "qualification_resume"
         private const val QUALIFICATION_PREFS = "debug-input-qualification"
         private const val QUALIFICATION_CHECKPOINT = "long-command-checkpoint"
     }

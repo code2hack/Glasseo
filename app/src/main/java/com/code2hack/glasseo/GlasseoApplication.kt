@@ -42,21 +42,39 @@ class GlasseoApplication : Application() {
         wizardStep = step
     }
 
-    fun startQualification(mode: QualificationMode, startIndex: Int = 0): QualificationSession = QualificationSession(
-        mode,
-        UUID.randomUUID().toString(),
-        hidBindings,
-        startIndex,
-        nowMillis = SystemClock::uptimeMillis,
-    ).also { qualificationSession = it }
+    fun startQualification(
+        mode: QualificationMode,
+        startIndex: Int = 0,
+        pauseAt: QualificationPauseTarget? = null,
+    ): QualificationSession = newQualification(mode, startIndex, emptyMap(), pauseAt)
 
-    fun restoreQualification(checkpoint: QualificationCheckpoint): QualificationSession = QualificationSession(
+    fun restoreQualification(
+        checkpoint: QualificationCheckpoint,
+        pauseAt: QualificationPauseTarget? = null,
+    ): QualificationSession = newQualification(
         checkpoint.mode,
-        UUID.randomUUID().toString(),
-        hidBindings,
         checkpoint.stepIndex,
         checkpoint.results,
-        SystemClock::uptimeMillis,
+        pauseAt,
+    )
+
+    private fun newQualification(
+        mode: QualificationMode,
+        startIndex: Int,
+        initialResults: Map<QualificationStep, OperationResult>,
+        pauseAt: QualificationPauseTarget?,
+    ): QualificationSession = QualificationSession(
+        mode = mode,
+        sessionId = UUID.randomUUID().toString(),
+        bindings = hidBindings,
+        startIndex = startIndex,
+        initialResults = if (mode == QualificationMode.BUILT_IN) {
+            ACCEPTED_BUILT_IN_OPERATION_RESULTS + initialResults
+        } else {
+            initialResults
+        },
+        nowMillis = SystemClock::uptimeMillis,
+        pauseAt = pauseAt,
     ).also { qualificationSession = it }
 
     companion object {

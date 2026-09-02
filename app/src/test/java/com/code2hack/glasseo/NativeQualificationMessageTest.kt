@@ -2,6 +2,7 @@ package com.code2hack.glasseo
 
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class NativeQualificationMessageTest {
@@ -22,7 +23,8 @@ class NativeQualificationMessageTest {
         assertEquals("AWAITING_FIRST", json.getString("phase"))
         assertEquals("Briefly use the intended PRIMARY control", json.getString("description"))
         assertEquals("Press the button you wanna bind", json.getString("prompt"))
-        assertEquals(16, json.length())
+        assertFalse(json.getBoolean("paused"))
+        assertEquals(17, json.length())
         assertEquals("UP", QualificationStep.UP.displayName)
         assertEquals("DOWN", QualificationStep.DOWN.displayName)
         assertEquals("LEFT", QualificationStep.LEFT.displayName)
