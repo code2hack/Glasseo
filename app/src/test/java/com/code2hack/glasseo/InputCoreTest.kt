@@ -85,6 +85,41 @@ class InputCoreTest {
         assertFalse(controller.isHidden)
         assertEquals(listOf(false, true), visibility)
         assertNull(controller.nextDeadlineMillis)
+
+        assertEquals(
+            listOf(SemanticAction.BEGIN),
+            controller.handle(down(hidPrimary, SemanticControl.PRIMARY, 300)).actions(),
+        )
+        assertEquals(
+            listOf(SemanticAction.SHORT, SemanticAction.END),
+            controller.handle(up(hidPrimary, SemanticControl.PRIMARY, 350)).actions(),
+        )
+    }
+
+    @Test fun longSecondaryRemainsDistinctAndDoesNotHideHud() {
+        val controller = HudInputController(InputClassifier(timing))
+        controller.handle(down(hidSecondary, SemanticControl.SECONDARY, 0))
+
+        assertEquals(listOf(SemanticAction.LONG), controller.advance(500).actions())
+        assertEquals(
+            listOf(SemanticAction.END),
+            controller.handle(up(hidSecondary, SemanticControl.SECONDARY, 600)).actions(),
+        )
+        assertFalse(controller.isHidden)
+    }
+
+    @Test fun oneSourceCannotCompleteAnotherSourcesInteraction() {
+        val classifier = InputClassifier(timing)
+        assertEquals(
+            listOf(SemanticAction.BEGIN),
+            classifier.handle(down(hidPrimary, SemanticControl.PRIMARY, 0)).actions(),
+        )
+
+        assertTrue(classifier.handle(up(builtInPrimary, SemanticControl.PRIMARY, 100)).isEmpty())
+        assertEquals(
+            listOf(SemanticAction.SHORT, SemanticAction.END),
+            classifier.handle(up(hidPrimary, SemanticControl.PRIMARY, 200)).actions(),
+        )
     }
 
     private fun owner(source: PhysicalSource, deviceId: Int, code: Int) = PhysicalOwner(source, deviceId, code)

@@ -19,10 +19,12 @@ data class QualificationOperation(
     val semanticBehaviorCount: Int = 1,
     val unacceptableSideEffect: Boolean = false,
     val suppression: SuppressionOutcome = SuppressionOutcome.NOT_NEEDED,
+    val hidPresses: List<HidPressTiming> = emptyList(),
 ) {
     val passes: Boolean
         get() = deterministicDelivery && semanticBehaviorCount == 1 && !unacceptableSideEffect &&
-            suppression != SuppressionOutcome.FAILED
+            suppression != SuppressionOutcome.FAILED &&
+            (signature !is HidOperationSignature || validHidPresses(signature.behavior, hidPresses))
 }
 
 data class OperationResult(
@@ -32,14 +34,31 @@ data class OperationResult(
     val deterministicDelivery: Boolean = true,
     val semanticBehaviorCount: Int = 1,
     val unacceptableSideEffect: Boolean = false,
+    val hidCaptures: List<List<HidPressTiming>> = emptyList(),
 )
 
-val ACCEPTED_BUILT_IN_OPERATION_RESULTS: Map<QualificationStep, OperationResult> = listOf(
-    QualificationStep.SHORT_COMMAND,
-    QualificationStep.LONG_COMMAND,
-).associateWith { step ->
-    OperationResult(step, OperationVerdict.PASS, SuppressionOutcome.SUCCEEDED)
-}
+val ACCEPTED_BUILT_IN_OPERATION_RESULTS: Map<QualificationStep, OperationResult> = mapOf(
+    QualificationStep.SHORT_COMMAND to OperationResult(
+        QualificationStep.SHORT_COMMAND,
+        OperationVerdict.PASS,
+        SuppressionOutcome.SUCCEEDED,
+    ),
+    QualificationStep.LONG_COMMAND to OperationResult(
+        QualificationStep.LONG_COMMAND,
+        OperationVerdict.PASS,
+        SuppressionOutcome.SUCCEEDED,
+    ),
+    QualificationStep.UP to OperationResult(
+        QualificationStep.UP,
+        OperationVerdict.PASS,
+        SuppressionOutcome.NOT_NEEDED,
+    ),
+    QualificationStep.DOWN to OperationResult(
+        QualificationStep.DOWN,
+        OperationVerdict.PASS,
+        SuppressionOutcome.NOT_NEEDED,
+    ),
+)
 
 data class QualificationState(
     val step: QualificationStep,
@@ -49,6 +68,23 @@ data class QualificationState(
     val capturedIdentity: String? = null,
     val complete: Boolean = false,
 )
+
+data class HidQualificationResult(
+    val peripheral: HidPeripheralIdentity?,
+    val bindings: Map<SemanticControl, HidPhysicalIdentity>,
+    val operations: Map<QualificationStep, OperationResult>,
+) {
+    val passes: Boolean
+        get() = peripheral != null &&
+            bindings.keys == SemanticControl.entries.toSet() &&
+            bindings.values.toSet().size == SemanticControl.entries.size &&
+            bindings.values.all { it.peripheral == peripheral } &&
+            operations.keys == QualificationStep.entries.toSet() &&
+            operations.values.all {
+                it.verdict == OperationVerdict.PASS && it.hidCaptures.size == 2 &&
+                    it.hidCaptures.all { capture -> validHidPresses(it.step.behavior, capture) }
+            }
+}
 
 class QualificationWizard(
     private val mode: QualificationMode,
@@ -75,6 +111,10 @@ class QualificationWizard(
         }
         if (mode == QualificationMode.HID) {
             val signature = operation.signature as? HidOperationSignature ?: return reset("HID input required")
+            if (bindings.peripheral?.let { it != signature.identity.peripheral } == true) {
+                reset("Use the same HID device")
+                return
+            }
             val expected = bindings.identityFor(step.control)
             if (step.verifiesExistingBinding && signature.identity != expected) {
                 reset("Use the same ${step.control.name} button")
@@ -107,6 +147,7 @@ class QualificationWizard(
             first.deterministicDelivery && operation.deterministicDelivery,
             maxOf(first.semanticBehaviorCount, operation.semanticBehaviorCount),
             first.unacceptableSideEffect || operation.unacceptableSideEffect,
+            if (mode == QualificationMode.HID) listOf(first.hidPresses, operation.hidPresses) else emptyList(),
         )
         candidate = null
         if (index == QualificationStep.entries.lastIndex) {
@@ -118,6 +159,12 @@ class QualificationWizard(
     }
 
     fun checkpoint() = QualificationCheckpoint(mode, index, candidate != null, results.toMap())
+
+    fun hidResult(): HidQualificationResult? = if (mode == QualificationMode.HID && state.complete) {
+        HidQualificationResult(bindings.peripheral, bindings.snapshot(), results.toMap())
+    } else {
+        null
+    }
 
     fun cancelAttempt() = reset("Input cancelled")
 
@@ -144,6 +191,23 @@ class QualificationWizard(
         identity,
         complete,
     )
+}
+
+private fun validHidPresses(
+    behavior: BehaviorClass,
+    presses: List<HidPressTiming>,
+    timing: InputTiming = InputTiming(),
+): Boolean {
+    val expectedCount = if (behavior == BehaviorClass.DOUBLE) 2 else 1
+    if (presses.size != expectedCount || presses.any { it.upAtMillis < it.downAtMillis }) return false
+    return when (behavior) {
+        BehaviorClass.SHORT -> presses.single().upAtMillis - presses.single().downAtMillis < timing.longPressMillis
+        BehaviorClass.LONG -> presses.single().upAtMillis - presses.single().downAtMillis >= timing.longPressMillis
+        BehaviorClass.DOUBLE -> presses.all {
+            it.upAtMillis - it.downAtMillis < timing.longPressMillis
+        } && presses[1].downAtMillis - presses[0].upAtMillis in 0..timing.doublePressMillis
+        BehaviorClass.DIRECTIONAL -> true
+    }
 }
 
 data class QualificationCheckpoint(
@@ -235,6 +299,8 @@ val QualificationStep.verifiesExistingBinding: Boolean
         this == QualificationStep.LONG_COMMAND
 
 internal fun StableOperationSignature.displayIdentity(): String = when (this) {
-    is HidOperationSignature -> "${identity.descriptor}:${identity.vendorId}:${identity.productId}:${identity.keyCode}:${identity.scanCode}"
+    is HidOperationSignature ->
+        "${identity.descriptor}:${identity.vendorId}:${identity.productId}:${identity.sources}:" +
+            "${identity.keyCode}:${identity.scanCode}"
     is BuiltInOperationSignature -> "keys=${keys.joinToString()}; broadcasts=${broadcasts.joinToString()}"
 }

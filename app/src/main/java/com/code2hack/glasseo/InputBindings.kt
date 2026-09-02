@@ -6,6 +6,17 @@ data class HidPhysicalIdentity(
     val productId: Int,
     val keyCode: Int,
     val scanCode: Int,
+    val sources: Int = 0,
+) {
+    val peripheral: HidPeripheralIdentity
+        get() = HidPeripheralIdentity(descriptor, vendorId, productId, sources)
+}
+
+data class HidPeripheralIdentity(
+    val descriptor: String,
+    val vendorId: Int,
+    val productId: Int,
+    val sources: Int,
 )
 
 class HidBindingMap {
@@ -14,7 +25,11 @@ class HidBindingMap {
     val size: Int
         get() = bindings.size
 
+    val peripheral: HidPeripheralIdentity?
+        get() = bindings.values.firstOrNull()?.peripheral
+
     fun bind(control: SemanticControl, identity: HidPhysicalIdentity): Boolean {
+        if (bindings.values.firstOrNull()?.peripheral?.let { it != identity.peripheral } == true) return false
         if (bindings.any { (boundControl, boundIdentity) -> boundControl != control && boundIdentity == identity }) {
             return false
         }
@@ -28,4 +43,6 @@ class HidBindingMap {
 
     fun controlFor(identity: HidPhysicalIdentity): SemanticControl? =
         bindings.entries.firstOrNull { it.value == identity }?.key
+
+    fun snapshot(): Map<SemanticControl, HidPhysicalIdentity> = bindings.toMap()
 }

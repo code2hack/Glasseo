@@ -26,8 +26,21 @@ class InputBindingsTest {
 
     @Test fun identityContainsNoEphemeralDeviceId() {
         assertEquals(
-            setOf("descriptor", "vendorId", "productId", "keyCode", "scanCode"),
+            setOf("descriptor", "vendorId", "productId", "sources", "keyCode", "scanCode"),
             HidPhysicalIdentity::class.java.declaredFields.map { it.name }.filterNot { it.startsWith("$") }.toSet(),
         )
+    }
+
+    @Test fun oneQualificationMapRejectsKeysFromAnotherPeripheral() {
+        val bindings = HidBindingMap()
+
+        assertTrue(bindings.bind(SemanticControl.PRIMARY, primary))
+        assertFalse(
+            bindings.bind(
+                SemanticControl.SECONDARY,
+                secondary.copy(descriptor = "other-keyboard"),
+            ),
+        )
+        assertEquals(1, bindings.size)
     }
 }

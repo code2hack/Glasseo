@@ -33,6 +33,11 @@ import androidx.webkit.WebViewFeature
 import androidx.webkit.WebMessageCompat
 
 class MainActivity : Activity(), InputManager.InputDeviceListener {
+    private data class PendingHidFinalizer(
+        val token: QualificationFinalizerToken,
+        val operation: QualificationOperation,
+    )
+
     private lateinit var root: FrameLayout
     private lateinit var webView: WebView
     private lateinit var inputManager: InputManager
@@ -50,7 +55,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private var hidQualificationCapture: HidQualificationCapture? = null
     private var builtInCapture: InputCapture? = null
     private var builtInFinalizerToken: QualificationFinalizerToken? = null
-    private var hidFinalizerToken: QualificationFinalizerToken? = null
+    private var pendingHidFinalizer: PendingHidFinalizer? = null
     private var attemptBrightness = -1
     private var attemptFocusLost = false
     private val attemptLifecycle = mutableSetOf<String>()
@@ -167,6 +172,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (!hasFocus) {
             if (builtInCapture != null) attemptFocusLost = true
             cancelInputs("focus-loss")
+        } else {
+            postQualificationState("focus-regained")
         }
     }
 
@@ -240,13 +247,17 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     override fun onInputDeviceRemoved(deviceId: Int) {
         val source = if (externalDevices.remove(deviceId)) PhysicalSource.HID else PhysicalSource.BUILT_IN
         emit(inputController.cancelSource(source, deviceId, SystemClock.uptimeMillis()))
-        hidQualificationCapture?.cancelSource(source, deviceId, SystemClock.uptimeMillis())
+        val qualificationCancelled = hidQualificationCapture
+            ?.cancelSource(source, deviceId, SystemClock.uptimeMillis()) == true
         if (source == PhysicalSource.HID && qualificationSession?.snapshot?.phase == QualificationPhase.AWAITING_CONFIRMATION) {
             qualificationSession?.cancelAttempt()
             publishQualificationMutation("disconnect")
         }
         scheduleDeadline()
-        trace("input-device-removed", "deviceId=$deviceId source=$source")
+        trace(
+            "input-device-removed",
+            "deviceId=$deviceId source=$source qualificationCancelled=$qualificationCancelled",
+        )
     }
 
     private fun configureWebView() {
@@ -383,22 +394,41 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     private fun handleHidQualification(event: KeyEvent) {
-        val session = qualificationSession ?: return
-        if (session.snapshot.complete) return
-        if (!session.armed) return traceQualificationIgnored(session, "hid-${event.action}")
         val action = event.physicalAction() ?: return
-        val operation = hidQualificationCapture?.handle(
+        handleHidQualification(
             PhysicalOwner(PhysicalSource.HID, event.deviceId, event.keyCode),
             event.hidIdentity(),
-            session.wizard.currentStep.control,
             action,
             event.eventTime,
+        )
+    }
+
+    private fun handleHidQualification(
+        owner: PhysicalOwner,
+        identity: HidPhysicalIdentity,
+        action: PhysicalAction,
+        timeMillis: Long,
+    ) {
+        val session = qualificationSession ?: return
+        if (session.snapshot.complete) return
+        if (!session.armed) return traceQualificationIgnored(session, "hid-$action")
+        val operation = hidQualificationCapture?.handle(
+            owner,
+            identity,
+            session.wizard.currentStep.control,
+            action,
+            timeMillis,
         )
         scheduleDeadline()
         if (operation != null) {
             when (val admission = session.capture(operation)) {
                 is CaptureAdmission.Accepted -> {
-                    hidFinalizerToken = admission.token
+                    pendingHidFinalizer = PendingHidFinalizer(admission.token, operation)
+                    trace(
+                        "qualification-hid-captured",
+                        "step=${session.wizard.currentStep} signature=${operation.signature} " +
+                            "presses=${operation.hidPresses}",
+                    )
                     publishQualificationMutation("hid-captured")
                     handler.postAtTime(finishHidCapture, checkNotNull(session.snapshot.settleDeadlineMillis))
                 }
@@ -409,10 +439,14 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     private fun finalizeHidAttempt() {
         val session = qualificationSession ?: return
-        val token = hidFinalizerToken ?: return
-        hidFinalizerToken = null
+        val pending = pendingHidFinalizer ?: return
+        pendingHidFinalizer = null
         val previousStep = session.wizard.currentStep
-        if (!session.finalize(token)) return traceQualificationIgnored(session, "stale-finalizer")
+        if (!session.finalize(pending.token)) return traceQualificationIgnored(session, "stale-finalizer")
+        trace(
+            "qualification-operation",
+            "step=$previousStep signature=${pending.operation.signature} presses=${pending.operation.hidPresses}",
+        )
         publishQualificationMutation("hid-finalized")
         if (session.snapshot.complete || session.wizard.currentStep != previousStep) prepareQualificationStep()
     }
@@ -527,7 +561,19 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (session.snapshot.complete) {
             glasseoApplication.correlateWizardStep(null)
             clearQualificationCheckpoint()
-            trace("qualification-matrix", "operations=${wizard.results} capabilities=${deriveCapabilities(wizard.results)}")
+            if (session.mode == QualificationMode.HID) {
+                val result = wizard.hidResult()
+                trace(
+                    "qualification-hid-result",
+                    "passes=${result?.passes} peripheral=${result?.peripheral} " +
+                        "bindings=${result?.bindings} operations=${result?.operations}",
+                )
+            } else {
+                trace(
+                    "qualification-matrix",
+                    "operations=${wizard.results} capabilities=${deriveCapabilities(wizard.results)}",
+                )
+            }
             return
         }
         glasseoApplication.correlateWizardStep(wizard.currentStep)
@@ -633,9 +679,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     internal fun emitForTest(event: SemanticInteraction) = emit(listOf(event))
 
-    internal fun startQualificationForTest(step: QualificationStep) {
+    internal fun startQualificationForTest(
+        step: QualificationStep,
+        mode: QualificationMode = QualificationMode.BUILT_IN,
+    ) {
         clearQualificationCheckpoint()
-        glasseoApplication.startQualification(QualificationMode.BUILT_IN, step.ordinal, qualificationPauseTarget)
+        glasseoApplication.startQualification(mode, step.ordinal, qualificationPauseTarget)
+        hidQualificationCapture = if (mode == QualificationMode.HID) HidQualificationCapture() else null
         prepareQualificationStep()
         publishQualificationMutation("test-start")
     }
@@ -654,6 +704,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         }, checkNotNull(session.snapshot.settleDeadlineMillis))
         return true
     }
+
+    internal fun submitHidPhysicalForTest(
+        owner: PhysicalOwner,
+        identity: HidPhysicalIdentity,
+        action: PhysicalAction,
+        timeMillis: Long,
+    ) = handleHidQualification(owner, identity, action, timeMillis)
 
     internal fun reloadQualificationForTest() {
         qualificationSession?.suspendCapture()
@@ -720,7 +777,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         handler.removeCallbacks(finishHidCapture)
         builtInCapture = null
         builtInFinalizerToken = null
-        hidFinalizerToken = null
+        pendingHidFinalizer = null
         session.cancelAttempt()
         publishQualificationMutation("cancel-$reason")
     }
@@ -737,6 +794,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             inputDevice?.productId ?: 0,
             keyCode,
             scanCode,
+            inputDevice?.sources ?: source,
         )
     }
 
@@ -769,8 +827,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         val device = inputManager.getInputDevice(deviceId)
         trace(
             event,
-            "deviceId=$deviceId vendor=${device?.vendorId} product=${device?.productId} " +
-                "sources=${device?.sources} external=${device?.isExternal}",
+            "deviceId=$deviceId descriptor=${device?.descriptor} vendor=${device?.vendorId} " +
+                "product=${device?.productId} sources=${device?.sources} external=${device?.isExternal}",
         )
     }
 
