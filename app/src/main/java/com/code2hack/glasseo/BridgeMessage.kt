@@ -5,6 +5,12 @@ import org.json.JSONObject
 sealed interface BridgeMessage {
     data object Hello : BridgeMessage
 
+    data class SemanticReceived(
+        val control: SemanticControl,
+        val action: SemanticAction,
+        val interactionId: Long,
+    ) : BridgeMessage
+
     data class ProbeResult(
         val passed: Boolean,
         val checks: Map<String, Boolean>,
@@ -35,6 +41,14 @@ sealed interface BridgeMessage {
                     Hello
                 }
                 "probe-result" -> parseProbe(json)
+                "semantic-received" -> {
+                    require(json.length() == 4) { "Malformed semantic receipt" }
+                    SemanticReceived(
+                        SemanticControl.valueOf(json.getString("control")),
+                        SemanticAction.valueOf(json.getString("action")),
+                        json.getLong("interactionId").also { require(it > 0) },
+                    )
+                }
                 else -> error("Unknown bridge message")
             }
         }

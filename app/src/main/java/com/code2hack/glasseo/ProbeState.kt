@@ -12,14 +12,19 @@ object ProbeState {
         private set
     @Volatile var rendererGone = 0
         private set
+    @Volatile var semanticReceipt: BridgeMessage.SemanticReceived? = null
+        private set
     private var latch = CountDownLatch(1)
+    private var semanticLatch = CountDownLatch(1)
 
     @Synchronized fun reset() {
         helloCount = 0
         result = null
         blockedNavigations = 0
         rendererGone = 0
+        semanticReceipt = null
         latch = CountDownLatch(1)
+        semanticLatch = CountDownLatch(1)
     }
 
     @Synchronized fun record(message: BridgeMessage) {
@@ -28,6 +33,10 @@ object ProbeState {
             is BridgeMessage.ProbeResult -> {
                 result = message
                 latch.countDown()
+            }
+            is BridgeMessage.SemanticReceived -> {
+                semanticReceipt = message
+                semanticLatch.countDown()
             }
         }
     }
@@ -43,5 +52,10 @@ object ProbeState {
     fun await(timeoutSeconds: Long): BridgeMessage.ProbeResult? {
         latch.await(timeoutSeconds, TimeUnit.SECONDS)
         return result
+    }
+
+    fun awaitSemanticReceipt(timeoutSeconds: Long): BridgeMessage.SemanticReceived? {
+        semanticLatch.await(timeoutSeconds, TimeUnit.SECONDS)
+        return semanticReceipt
     }
 }

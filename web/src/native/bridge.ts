@@ -17,7 +17,15 @@ export const requiredProbeChecks = [
   "remoteNavigationRejected",
 ] as const;
 
-export type NativeMessage = { type: "hello" } | ProbeResult;
+export type NativeMessage =
+  | { type: "hello" }
+  | ProbeResult
+  | {
+      type: "semantic-received";
+      control: string;
+      action: string;
+      interactionId: number;
+    };
 
 type NativePort = { postMessage(message: string): void };
 
@@ -34,6 +42,16 @@ export function decodeNativeMessage(value: string): NativeMessage {
   }
   const message = parsed as Record<string, unknown>;
   if (message.type === "hello") return { type: "hello" };
+  if (
+    message.type === "semantic-received" &&
+    Object.keys(message).length === 4 &&
+    typeof message.control === "string" &&
+    typeof message.action === "string" &&
+    Number.isSafeInteger(message.interactionId) &&
+    (message.interactionId as number) > 0
+  ) {
+    return message as NativeMessage;
+  }
   if (
     message.type === "probe-result" &&
     typeof message.passed === "boolean" &&

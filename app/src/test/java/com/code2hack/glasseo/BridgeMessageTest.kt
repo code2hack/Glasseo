@@ -10,6 +10,10 @@ class BridgeMessageTest {
     @Test fun parsesKnownMessages() {
         assertEquals(BridgeMessage.Hello, BridgeMessage.parse("{\"type\":\"hello\"}"))
         assertTrue((BridgeMessage.parse(passingProbe()) as BridgeMessage.ProbeResult).isPassing())
+        assertEquals(
+            BridgeMessage.SemanticReceived(SemanticControl.PRIMARY, SemanticAction.SHORT, 7),
+            BridgeMessage.parse("{\"type\":\"semantic-received\",\"control\":\"PRIMARY\",\"action\":\"SHORT\",\"interactionId\":7}"),
+        )
     }
 
     @Test fun rejectsMalformedAndUnknownMessages() {
@@ -17,6 +21,8 @@ class BridgeMessageTest {
             "{}",
             "{\"type\":\"other\"}",
             "{\"type\":\"hello\",\"extra\":true}",
+            "{\"type\":\"semantic-received\",\"control\":\"OTHER\",\"action\":\"SHORT\",\"interactionId\":7}",
+            "{\"type\":\"semantic-received\",\"control\":\"PRIMARY\",\"action\":\"SHORT\",\"interactionId\":0}",
             passingProbe().replace("\"passed\":true", "\"passed\":\"true\""),
             passingProbe().replace("\"secureRandom\":true", "\"secureRandom\":\"true\""),
         ).forEach {

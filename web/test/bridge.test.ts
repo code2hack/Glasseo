@@ -6,11 +6,17 @@ import {
   requiredProbeChecks,
 } from "../src/native/bridge";
 
-test("bridge accepts its two narrow message types", () => {
+test("bridge accepts its narrow message types", () => {
   assert.deepEqual(decodeNativeMessage('{"type":"hello"}'), { type: "hello" });
   assert.equal(
     decodeNativeMessage(JSON.stringify(probeResult())).type,
     "probe-result",
+  );
+  assert.equal(
+    decodeNativeMessage(
+      '{"type":"semantic-received","control":"PRIMARY","action":"SHORT","interactionId":1}',
+    ).type,
+    "semantic-received",
   );
 });
 

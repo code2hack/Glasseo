@@ -30,6 +30,15 @@ class WebViewQualificationTest {
             assertEquals(1, ProbeState.helloCount)
             assertTrue("Remote main-frame navigation was not rejected", ProbeState.blockedNavigations >= 1)
             assertEquals("WebView renderer was lost", 0, ProbeState.rendererGone)
+            scenario.onActivity { activity ->
+                activity.emitForTest(
+                    SemanticInteraction(SemanticControl.PRIMARY, SemanticAction.SHORT, 42, 123),
+                )
+            }
+            assertEquals(
+                BridgeMessage.SemanticReceived(SemanticControl.PRIMARY, SemanticAction.SHORT, 42),
+                ProbeState.awaitSemanticReceipt(10),
+            )
         }
     }
 }
