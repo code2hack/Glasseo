@@ -47,7 +47,11 @@ export class PairingController {
 
   subscribe(listener: (state: PairingState) => void): () => void {
     this.listeners.add(listener);
-    listener(this.state);
+    try {
+      listener(this.state);
+    } catch {
+      // Subscribers cannot affect pairing control flow.
+    }
     return () => this.listeners.delete(listener);
   }
 
@@ -99,6 +103,12 @@ export class PairingController {
 
   private set(state: PairingState): void {
     this.state = state;
-    for (const listener of this.listeners) listener(state);
+    for (const listener of this.listeners) {
+      try {
+        listener(state);
+      } catch {
+        // Subscribers cannot affect pairing control flow.
+      }
+    }
   }
 }

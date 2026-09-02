@@ -149,10 +149,28 @@ test("failed connection or storage closes the provisional runtime without mutati
   storage.failPut = true;
   await assert.rejects(
     registry.add(offer("alpha", "relay.paseo.sh:443")),
-    hasCode("connection_failure"),
+    hasCode("storage_error"),
   );
   assert.equal(factory.runtimes[1]?.closed, true);
+  assert.equal(storage.profiles.size, 0);
   assert.equal(registry.snapshot().hosts.length, 0);
+});
+
+test("restored hosts retain specific runtime failure codes", async () => {
+  for (const [runtimeCode, hostCode] of [
+    ["wrong_daemon", "identity_mismatch"],
+    ["unsupported_daemon", "unsupported_daemon"],
+    ["unverified_version", "unsupported_daemon"],
+  ] as const) {
+    const factory = new FakeFactory();
+    factory.failNext = new PaseoRuntimeError(runtimeCode, "rejected");
+    const registry = new HostRegistry(
+      new MemoryStorage([profile(runtimeCode)]),
+      factory.create,
+    );
+    await registry.restore();
+    assert.equal(registry.snapshot().hosts[0]?.error, hostCode);
+  }
 });
 
 test("identity and version failures retain typed errors and close the provisional runtime", async () => {
@@ -305,11 +323,60 @@ test("removal deletes and closes one host while fencing late callbacks", async (
   );
 });
 
+test("failed removal keeps live callbacks and retry fences only after success", async () => {
+  const storage = new MemoryStorage([profile("alpha")]);
+  const factory = new FakeFactory();
+  const registry = new HostRegistry(storage, factory.create);
+  await registry.restore();
+  const runtime = factory.runtimes[0]!;
+
+  storage.failDelete = true;
+  await assert.rejects(registry.remove("alpha"), hasCode("storage_error"));
+  assert.equal(runtime.closed, false);
+  assert.equal(storage.profiles.has("alpha"), true);
+  assert.equal(registry.snapshot().hosts[0]?.error, "storage_error");
+  runtime.emit({ status: "disconnected", reason: "test" });
+  assert.equal(registry.snapshot().hosts[0]?.status, "offline");
+  runtime.emit({ status: "connecting", attempt: 1 });
+  assert.equal(registry.snapshot().hosts[0]?.status, "connecting");
+  runtime.emit({ status: "connected" });
+  assert.equal(registry.snapshot().hosts[0]?.status, "online");
+
+  storage.failDelete = false;
+  await registry.remove("alpha");
+  assert.equal(runtime.closed, true);
+  assert.equal(storage.profiles.has("alpha"), false);
+  runtime.emitStale({ status: "connected" });
+  assert.equal(registry.snapshot().hosts.length, 0);
+});
+
+test("throwing registry subscriber cannot starve observers or transactions", async () => {
+  const storage = new MemoryStorage();
+  const factory = new FakeFactory();
+  const registry = new HostRegistry(storage, factory.create);
+  const observed: string[] = [];
+  registry.subscribe(() => {
+    throw new Error("observer failed");
+  });
+  registry.subscribe((snapshot) => {
+    observed.push(snapshot.hosts.map((host) => host.status).join(","));
+  });
+
+  await registry.restore();
+  await registry.add(offer("alpha", "relay.paseo.sh:443"));
+  await registry.remove("alpha");
+
+  assert.deepEqual(observed, ["", "", "online", "removing", ""]);
+  assert.equal(storage.profiles.size, 0);
+  assert.equal(factory.runtimes[0]?.closed, true);
+});
+
 class MemoryStorage implements HostStorage {
   profiles = new Map<string, unknown>();
   clientId: string | null = null;
   failPut = false;
   failLoad = false;
+  failDelete = false;
   loadBarrier: Promise<void> | null = null;
 
   constructor(profiles: unknown[] = []) {
@@ -331,6 +398,7 @@ class MemoryStorage implements HostStorage {
     this.profiles.set(value.serverId, structuredClone(value));
   }
   async deleteProfile(serverId: string) {
+    if (this.failDelete) throw new Error("delete failed");
     this.profiles.delete(serverId);
   }
   async getClientId() {
@@ -344,6 +412,7 @@ class MemoryStorage implements HostStorage {
 class FakeRuntime implements HostRuntime {
   closed = false;
   private listener: (state: PaseoConnectionState) => void = () => {};
+  private lastListener: (state: PaseoConnectionState) => void = () => {};
   private resolve!: (host: PaseoHostInfo) => void;
   private reject!: (error: Error) => void;
   readonly pending = new Promise<PaseoHostInfo>((resolve, reject) => {
@@ -369,7 +438,7 @@ class FakeRuntime implements HostRuntime {
     this.closed = true;
   }
   subscribeConnection(listener: (state: PaseoConnectionState) => void) {
-    this.listener = listener;
+    this.listener = this.lastListener = listener;
     listener({ status: "idle" });
     return () => {
       this.listener = () => {};
@@ -377,6 +446,9 @@ class FakeRuntime implements HostRuntime {
   }
   emit(state: PaseoConnectionState) {
     this.listener(state);
+  }
+  emitStale(state: PaseoConnectionState) {
+    this.lastListener(state);
   }
   resolveConnect() {
     this.emit({ status: "connected" });

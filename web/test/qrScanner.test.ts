@@ -78,6 +78,58 @@ test("pairing accepts results only while its scanner session is active", () => {
   assert.equal(cancels, 0);
 });
 
+test("throwing pairing subscriber cannot starve completion or persistence", async () => {
+  let receive: (message: QrScannerMessage) => void = () => {};
+  let stored = 0;
+  const registry = new HostRegistry(
+    {
+      ...emptyStorage,
+      putProfile: async () => {
+        stored++;
+      },
+    },
+    (options) => ({
+      connect: async () => ({
+        serverId: options.expectedServerId,
+        hostname: "fixture",
+        version: "0.7.0",
+        capabilities: {},
+        features: {},
+      }),
+      close: async () => {},
+      subscribeConnection: () => () => {},
+    }),
+  );
+  await registry.restore();
+  const pairing = new PairingController(registry, {
+    listen(listener) {
+      receive = listener;
+      return () => {};
+    },
+    start() {},
+    cancel() {},
+  });
+  const observed: PairingState["status"][] = [];
+  pairing.subscribe(() => {
+    throw new Error("observer failed");
+  });
+  pairing.subscribe((state) => observed.push(state.status));
+
+  pairing.start();
+  receive({ type: "scanner-result", value: offer("alpha") });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(observed, [
+    "idle",
+    "scanning",
+    "validating",
+    "connecting",
+    "paired",
+  ]);
+  assert.equal(stored, 1);
+  assert.equal(registry.snapshot().hosts.length, 1);
+});
+
 const emptyStorage: HostStorage = {
   loadProfiles: async () => [],
   putProfile: async () => {},
@@ -85,3 +137,14 @@ const emptyStorage: HostStorage = {
   getClientId: async () => null,
   putClientId: async () => {},
 };
+
+function offer(serverId: string): string {
+  return `https://app.paseo.sh/#offer=${Buffer.from(
+    JSON.stringify({
+      v: 2,
+      serverId,
+      daemonPublicKeyB64: `public-${serverId}`,
+      relay: { endpoint: "relay.paseo.sh:443" },
+    }),
+  ).toString("base64url")}`;
+}

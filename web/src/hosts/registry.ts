@@ -51,7 +51,11 @@ export class HostRegistry {
 
   subscribe(listener: HostRegistryListener): () => void {
     this.listeners.add(listener);
-    listener(this.snapshot());
+    try {
+      listener(this.snapshot());
+    } catch {
+      // Subscribers cannot affect registry control flow.
+    }
     return () => this.listeners.delete(listener);
   }
 
@@ -123,7 +127,11 @@ export class HostRegistry {
       runtime = this.createRuntime(candidate);
       const host = await runtime.connect();
       const profile = profileFromAcceptedHost(candidate, host, this.clock());
-      await this.storage.putProfile(profile);
+      try {
+        await this.storage.putProfile(profile);
+      } catch {
+        throw new HostError("storage_error", "Could not save host profile");
+      }
       this.install(profile, "online", runtime);
       this.publish();
       return profile;
@@ -140,7 +148,6 @@ export class HostRegistry {
     if (!slot) return;
     slot.status = "removing";
     slot.error = null;
-    slot.generation = ++this.generation;
     this.publish();
     try {
       await this.storage.deleteProfile(serverId);
@@ -150,6 +157,7 @@ export class HostRegistry {
       this.publish();
       throw new HostError("storage_error", "Could not remove saved host");
     }
+    slot.generation = ++this.generation;
     this.slots.delete(serverId);
     slot.unsubscribe();
     await slot.runtime.close().catch(() => undefined);
@@ -227,10 +235,10 @@ export class HostRegistry {
         slot.status = "online";
         this.publish();
       }
-    } catch {
+    } catch (error) {
       if (this.slots.get(serverId)?.generation === slot.generation) {
         slot.status = "error";
-        slot.error = "connection_failure";
+        slot.error = mapRuntimeError(error).code;
         this.publish();
       }
     }
@@ -254,7 +262,13 @@ export class HostRegistry {
 
   private publish(): void {
     const snapshot = this.snapshot();
-    for (const listener of this.listeners) listener(snapshot);
+    for (const listener of this.listeners) {
+      try {
+        listener(snapshot);
+      } catch {
+        // Subscribers cannot affect registry control flow.
+      }
+    }
   }
 }
 
