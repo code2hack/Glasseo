@@ -37,7 +37,7 @@ Operational rules:
 5. When a Worker discovers that an article needs to change, the Worker reports the evidence and requested change to the Manager. If Owner approval/instruction is not already explicit, the Manager obtains it before any article edit. The Manager may then edit `DEV.md` itself; for `SPEC.md`, `AGENTS.md`, or `MILESTONES.md`, the Manager asks the CTO to make the approved change. The Worker refreshes from remote `main` before continuing work that depends on the update.
 6. There is no issue-assignment exception to this ownership rule: Workers never become editors of these four files, the Manager never becomes editor of `SPEC.md`, `AGENTS.md`, or `MILESTONES.md`, and the CTO never becomes editor of `DEV.md`.
 
-ChatGPT conversations and tmux messages are coordination channels, not durable project records. Important decisions, plans, review results, blockers, and status changes must be written back to the repository through the role that owns the relevant durable surface.
+ChatGPT and Codex conversations are coordination channels, not durable project records. Important decisions, plans, review results, blockers, and status changes must be written back to the repository through the role that owns the relevant durable surface.
 
 When sources conflict, work pauses until the Project Owner and CTO resolve the conflict and, when an article edit is required, the Project Owner explicitly approves or instructs it and the exclusive owner updates the canonical remote-`main` article.
 
@@ -50,9 +50,9 @@ The Project Owner is the final human authority. The Project Owner:
 - discusses product design and freezes or reopens `SPEC.md` with the CTO;
 - is the approval authority for every change to `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md`;
 - explicitly instructs or approves article changes while the exclusive owner performs the actual repository edit;
-- creates the Manager's local tmux session;
+- creates the Manager's local Codex thread;
 - gives the Manager the exact URL of the ChatGPT CTO conversation;
-- chooses the hosts, tmux locations, Codex profiles, and maximum Worker concurrency;
+- chooses the hosts, Codex profiles, and maximum Worker concurrency;
 - handles human gates and ALARM events;
 - provides or approves the alarm mechanism recorded in `DEV.md`.
 
@@ -75,7 +75,7 @@ The CTO is the default design and implementation reviewer for this workflow.
 
 ### 2.3 Codex Manager
 
-The Manager is one local Codex thread running in a tmux session created by the Project Owner. The Manager:
+The Manager is one local Codex thread created by the Project Owner. The Manager:
 
 - communicates with the Project Owner;
 - communicates with the CTO through the `$ask-chatgpt` skill;
@@ -141,6 +141,8 @@ Example:
 Glasseo-#1-worker@spark
 ```
 
+The Manager records each Worker's exact Codex thread ID with its Worker name and issue.
+
 ### 3.3 GitHub comment attribution
 
 Because all roles may use the same GitHub account, every issue and pull-request comment begins with the author's role identity:
@@ -178,28 +180,30 @@ If ChatGPT, CDP, or `$ask-chatgpt` is unavailable after the retry procedure docu
 
 ### 4.2 Manager ↔ Workers
 
-Workers and the Manager communicate through tmux.
+The Manager and Workers use the `$ask-codex` skill for every direct message to another Codex thread. Each sender addresses the exact receiving Codex thread ID. The Manager records every Worker thread ID, and every Worker records the Manager thread ID provided at dispatch.
 
 Every Worker spawn prompt includes:
 
 - repository and issue URL;
-- Worker name;
-- assigned host and tmux session/window/pane;
-- Manager hostname and exact tmux session/window/pane;
+- Worker name and exact Worker Codex thread ID;
+- assigned host;
+- Manager hostname and exact Manager Codex thread ID;
 - branch or worktree assignment;
 - CTO plan comment URL;
 - relevant acceptance criteria;
 - instruction to fetch and use the current remote-`main` `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` as read-only project articles;
 - required build, test, and verification commands from `DEV.md`;
-- human-gate and reporting procedure.
+- human-gate and reporting procedure;
+- `$ask-codex` reply route to the Manager thread.
 
 **Mandatory Manager↔Worker verification:** for every direct Manager↔Worker work message, the sender MUST:
 
-1. verify `DELIVERED`: the complete intended message was submitted to the exact intended receiving Codex thread;
-2. verify `RECEIVER_WORKING`: after delivery, the exact receiving Codex thread has actually begun working on an in-progress turn for the submitted work, using the most authoritative Codex thread/turn state available; with the current app-server model, `turn/started` with the receiver turn `inProgress`, or equivalent direct turn inspection, satisfies this check;
-3. keep the communication task active until both `DELIVERED` and `RECEIVER_WORKING` are verified;
-4. complete both checks before ending the current turn or continuing to other work;
-5. inspect, retry, or repair the communication path when either check is unresolved, and escalate through the Manager/ALARM procedure when both checks cannot be established safely.
+1. send the complete message through `$ask-codex` to the exact intended receiving Codex thread ID;
+2. verify `DELIVERED`: the complete intended message was submitted to that receiving thread;
+3. verify `RECEIVER_WORKING`: after delivery, that receiving thread has actually begun working on an in-progress turn for the submitted work, using the most authoritative Codex thread/turn state available; with the current app-server model, `turn/started` with the receiver turn `inProgress`, or equivalent direct turn inspection, satisfies this check;
+4. keep the communication task active until both `DELIVERED` and `RECEIVER_WORKING` are verified;
+5. complete both checks before ending the current turn or continuing to other work;
+6. inspect, retry, or repair the `$ask-codex` communication path when either check is unresolved, and escalate through the Manager/ALARM procedure when both checks cannot be established safely.
 
 Worker reports begin with the Worker identity. The Manager records important Worker findings on the issue or pull request.
 
@@ -222,7 +226,7 @@ A human gate is any step that requires the Project Owner's direct judgment or ph
 
 - changing a frozen product decision or `SPEC.md` behavior;
 - approving or instructing a change to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md` when no prior explicit Owner authority covers the change;
-- changing the Owner-selected host, tmux layout, Worker profile, or maximum Worker concurrency;
+- changing the Owner-selected host, Worker profile, or maximum Worker concurrency;
 - device unlock, pairing, cable movement, permission dialog, QR scan, or other physical-device action;
 - login, credential, account, or secret handling that automation cannot safely complete;
 - destructive or security-sensitive actions not already approved by the issue plan;
@@ -259,9 +263,9 @@ Each issue should contain:
 
 ### 6.2 Manager bootstrap
 
-1. The Project Owner creates the Manager's tmux session.
+1. The Project Owner creates the Manager's Codex thread.
 2. The Project Owner provides the CTO conversation URL and implementation preferences.
-3. The Manager validates the workspace, toolchains, devices, credentials boundary, build commands, test commands, tmux conventions, alarm mechanism, and cleanup procedure.
+3. The Manager validates the workspace, toolchains, devices, credentials boundary, build commands, test commands, `$ask-codex` routing, alarm mechanism, and cleanup procedure.
 4. After explicit Project Owner approval/instruction, the Manager writes or updates the canonical remote-`main` `DEV.md` with verified commands and environment facts.
 
 `DEV.md` should include at least:
@@ -272,7 +276,7 @@ Each issue should contain:
 - build, test, lint, formatting, and packaging commands;
 - device, emulator, ADB, network, and relay procedures;
 - branch/worktree conventions;
-- tmux conventions;
+- Codex thread identity and `$ask-codex` routing conventions;
 - alarm procedure;
 - cleanup and archival procedure;
 - known environment limitations.
@@ -328,10 +332,10 @@ For each `PLANNED` ticket selected for dispatch, the Manager performs these step
 
 1. Create or confirm the isolated branch or worktree according to `DEV.md`.
 2. Fetch canonical remote `main` and make the current `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` available to the Worker as read-only project references.
-3. Spawn exactly one Worker for that issue.
-4. Provide the Worker with the issue URL, CTO plan comment, assigned host and profile, branch/worktree instructions, required project documents, Manager tmux coordinates, tests, verification requirements, and reporting/human-gate procedure.
+3. Spawn exactly one Worker for that issue and record its exact Codex thread ID.
+4. Send the Worker the issue URL, CTO plan comment, assigned host and profile, branch/worktree instructions, required project documents, Manager thread ID, tests, verification requirements, and reporting/human-gate procedure through `$ask-codex`.
 5. Verify the complete spawn message is `DELIVERED` and the intended Worker is `RECEIVER_WORKING` according to Section 4.2.
-6. Record the Worker identity and work state on the issue.
+6. Record the Worker identity, thread ID, and work state on the issue.
 7. Only then proceed to spawn the next planned Worker.
 
 Previously started Workers continue running while later Workers are spawned. The Manager never exceeds the Owner-selected concurrency limit.
@@ -346,11 +350,11 @@ A Worker follows this loop:
 2. Confirm that the implementation worktree has no intentional diff to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md`.
 3. Implement the CTO plan.
 4. Run required build, test, verification, and debugging commands.
-5. Report any blocker, article-change need, or human gate to the Manager instead of editing a project article, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
+5. Report any blocker, article-change need, or human gate to the Manager through `$ask-codex`, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
 6. Update implementation and tests until acceptance criteria pass.
 7. Before commit/push, fetch remote `main` again, re-check any article changes that affect the work, and ensure the four project articles are absent from the implementation diff.
 8. Commit and push the assigned branch.
-9. Report to the Manager with:
+9. Report to the Manager through `$ask-codex` with:
    - commit SHA;
    - concise change summary;
    - commands run and results;
@@ -373,7 +377,7 @@ When review returns `CHANGES_REQUESTED`:
 
 1. The CTO writes a concrete correction plan on the issue or pull request.
 2. The CTO informs the Manager through `$ask-chatgpt`.
-3. The Manager re-dispatches the correction plan to the same Worker and verifies both `DELIVERED` and Worker `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
+3. The Manager re-dispatches the correction plan to the same Worker through `$ask-codex` and verifies both `DELIVERED` and Worker `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
 4. The Worker updates, tests, commits, pushes, and reports again.
 5. The loop repeats until the CTO records `PASS`.
 
@@ -383,7 +387,7 @@ When review returns `PASS`:
 2. The Manager merges the pull request.
 3. The Manager closes the issue.
 4. The Manager posts the final commit, PR, and verification result.
-5. The Manager closes and archives the Worker thread and cleans its tmux/worktree resources according to `DEV.md`.
+5. The Manager closes and archives the Worker thread and cleans its worktree and runtime resources according to `DEV.md`.
 
 ## 10. Work isolation and lifecycle
 
