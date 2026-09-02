@@ -193,26 +193,13 @@ Every Worker spawn prompt includes:
 - required build, test, and verification commands from `DEV.md`;
 - human-gate and reporting procedure.
 
-**Mandatory delivery-and-working verification:** every direct Manager↔Worker work message has two independent conditions that MUST both be verified by the sender **before the sender may end the current turn or continue to unrelated work**:
+**Mandatory Manager↔Worker verification:** for every direct Manager↔Worker work message, the sender MUST:
 
-1. **`DELIVERED`** — the complete intended message has actually been submitted to the exact intended receiver, not merely typed, injected, pasted, queued toward an assumed target, or left in the receiver's composer.
-2. **`RECEIVER_WORKING`** — after `DELIVERED`, the exact receiving Codex thread is demonstrably busy/working on an in-progress turn. Merely proving that the tmux pane, Codex process, or thread is alive, loaded, or top-level `active` is not sufficient.
-
-This rule applies identically in both directions and includes Worker spawn prompts, implementation instructions, amendments, corrections, questions, blocker/human-gate reports, progress reports, completion reports, acknowledgements that carry work-critical information, and every other direct Manager↔Worker work message.
-
-The sender MUST check the receiver's actual Codex work state after submission. Use the most authoritative state interface available for that installed Codex version. With the current Codex app-server model, positive `RECEIVER_WORKING` evidence is a receiver turn that has actually begun running — for example a `turn/started` notification for the target thread with that turn in `inProgress`, or an equivalent direct thread/turn inspection showing the receiver has an in-progress running turn. The top-level thread state `active` by itself does **not** satisfy this rule. A receiver that is waiting for approval or waiting for user input does **not** satisfy `RECEIVER_WORKING` even though its thread may still be `active`.
-
-For tmux/TUI communication, merely issuing `send-keys`/an injection command, receiving a successful shell exit code, observing that the tmux target exists, observing a live Codex process, seeing only part of the message, or observing a pre-existing/stale `Working`/`active` state is **not** sufficient evidence. The sender MUST, after submission:
-
-1. verify the exact intended tmux session/window/pane and receiving Codex thread identity;
-2. obtain evidence that the **complete** message was submitted as receiver input; and
-3. verify that the receiving Codex thread is `RECEIVER_WORKING` after that submission.
-
-If the receiver was idle before submission, the expected proof is an idle/not-working → running/working transition for the receiver after the message is submitted. If the receiver was already working before submission, the pre-existing working state cannot prove the new message was acted on. The sender must obtain evidence that the new submitted message was admitted to the live receiver — for example by correlation to the receiver's current turn/steer admission when such correlation is available, or by waiting until the submitted input begins its own running turn. If the installed transport cannot correlate a new message while the receiver is already working, the sender must not treat the unchanged busy state as verification.
-
-Only after both `DELIVERED` and `RECEIVER_WORKING` pass may the sender treat the communication as complete, end the current turn, or move on to another job. A later receiver acknowledgement is useful additional evidence but does not replace either condition.
-
-If either condition cannot be verified, the sender MUST stop normal progress on that communication path, inspect/retry/repair the target or receiver state, and re-submit only when doing so cannot duplicate an already-admitted message. The sender MUST NOT end the turn, start unrelated work, spawn the next Worker, merge/close based on the unverified message, or report the communication as complete. If the receiver cannot be brought into a verified working state for the submitted message or the communication path remains unavailable, escalate through the documented Manager/ALARM procedure while preserving safe state.
+1. verify `DELIVERED`: the complete intended message was submitted to the exact intended receiving Codex thread;
+2. verify `RECEIVER_WORKING`: after delivery, the exact receiving Codex thread has actually begun working on an in-progress turn for the submitted work, using the most authoritative Codex thread/turn state available; with the current app-server model, `turn/started` with the receiver turn `inProgress`, or equivalent direct turn inspection, satisfies this check;
+3. keep the communication task active until both `DELIVERED` and `RECEIVER_WORKING` are verified;
+4. complete both checks before ending the current turn or continuing to other work;
+5. inspect, retry, or repair the communication path when either check is unresolved, and escalate through the Manager/ALARM procedure when both checks cannot be established safely.
 
 Worker reports begin with the Worker identity. The Manager records important Worker findings on the issue or pull request.
 
