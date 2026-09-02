@@ -18,7 +18,6 @@ import { exportPublicKey, generateKeyPair } from "@getpaseo/relay/e2ee";
 const DISABLED_DAEMON_DEFAULT_CAPABILITIES = {
   [CLIENT_CAPS.compactProviderSnapshots]: false,
   [CLIENT_CAPS.customModeIcons]: false,
-  [CLIENT_CAPS.projectUpdates]: false,
   [CLIENT_CAPS.providerSubagents]: false,
   [CLIENT_CAPS.reasoningMergeEnum]: false,
   [CLIENT_CAPS.terminalReflowableSnapshot]: false,
@@ -47,6 +46,20 @@ export type PaseoEvent = Extract<
   DaemonEvent,
   { type: (typeof PASEO_EVENT_TYPES)[number] }
 >;
+export type PaseoDirectoryEvent =
+  | Extract<
+      PaseoEvent,
+      { type: "agent_update" | "workspace_update" | "project.update" }
+    >
+  | {
+      type: "agent_deleted";
+      agentId: string;
+    }
+  | {
+      type: "agent_archived";
+      agentId: string;
+      archivedAt: string;
+    };
 type Inbound<T extends SessionInboundMessage["type"]> = Extract<
   SessionInboundMessage,
   { type: T }
@@ -60,6 +73,10 @@ type Outbound<T extends SessionOutboundMessage["type"]> =
 export type PaseoProjects = Outbound<"project.list.response">;
 export type PaseoWorkspaces = Outbound<"fetch_workspaces_response">;
 export type PaseoAgents = Outbound<"fetch_agents_response">;
+export type PaseoProjectRecord = PaseoProjects["projects"][number];
+export type PaseoWorkspaceRecord = PaseoWorkspaces["entries"][number];
+export type PaseoAgentEntry = PaseoAgents["entries"][number];
+export type PaseoAgentRecord = PaseoAgentEntry["agent"];
 type PaseoAgentResponse = Outbound<"fetch_agent_response">;
 export type PaseoAgent = {
   agent: NonNullable<PaseoAgentResponse["agent"]>;
@@ -116,6 +133,9 @@ export interface PaseoRuntime {
     listener: (state: PaseoConnectionState) => void,
   ): () => void;
   subscribeEvents(listener: (event: PaseoEvent) => void): () => void;
+  subscribeDirectory(
+    listener: (event: PaseoDirectoryEvent) => void,
+  ): () => void;
   listProjects(): Promise<PaseoProjects>;
   listWorkspaces(options?: PaseoWorkspacesOptions): Promise<PaseoWorkspaces>;
   listAgents(options?: PaseoAgentsOptions): Promise<PaseoAgents>;
@@ -198,6 +218,7 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
     clientType: "mobile",
     capabilities: {
       ...DISABLED_DAEMON_DEFAULT_CAPABILITIES,
+      [CLIENT_CAPS.projectUpdates]: true,
       [CLIENT_CAPS.selectiveAgentTimeline]: true,
     },
     e2ee: {
@@ -228,6 +249,21 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
   function notifyConnectionListeners(state: PaseoConnectionState): void {
     for (const listener of connectionListeners)
       notifyConnectionListener(listener, state);
+  }
+
+  function notifyDirectoryListener(
+    listener: (event: PaseoDirectoryEvent) => void,
+    event: PaseoDirectoryEvent,
+  ): void {
+    try {
+      listener(event);
+    } catch {
+      try {
+        options.log?.("warn", "Paseo directory subscriber failed");
+      } catch {
+        // Subscriber and logging failures never affect connection ownership.
+      }
+    }
   }
 
   subscriptions.add(
@@ -331,6 +367,61 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
         subscriptions.delete(unsubscribe);
         unsubscribe();
       };
+    },
+    subscribeDirectory(listener) {
+      if (disposed) return () => {};
+      const unsubscribes = [
+        client.on("agent_update", (message) => {
+          if (!host) return;
+          notifyDirectoryListener(listener, {
+            type: "agent_update",
+            agentId:
+              message.payload.kind === "upsert"
+                ? message.payload.agent.id
+                : message.payload.agentId,
+            payload: message.payload,
+          });
+        }),
+        client.on("agent_deleted", (message) => {
+          if (host)
+            notifyDirectoryListener(listener, {
+              type: "agent_deleted",
+              agentId: message.payload.agentId,
+            });
+        }),
+        client.on("agent_archived", (message) => {
+          if (host)
+            notifyDirectoryListener(listener, {
+              type: "agent_archived",
+              agentId: message.payload.agentId,
+              archivedAt: message.payload.archivedAt,
+            });
+        }),
+        client.on("workspace_update", (message) => {
+          if (!host) return;
+          notifyDirectoryListener(listener, {
+            type: "workspace_update",
+            workspaceId:
+              message.payload.kind === "upsert"
+                ? message.payload.workspace.id
+                : message.payload.id,
+            payload: message.payload,
+          });
+        }),
+        client.on("project.update", (message) => {
+          if (host)
+            notifyDirectoryListener(listener, {
+              type: "project.update",
+              payload: message.payload,
+            });
+        }),
+      ];
+      const unsubscribe = () => {
+        subscriptions.delete(unsubscribe);
+        for (const stop of unsubscribes) stop();
+      };
+      subscriptions.add(unsubscribe);
+      return unsubscribe;
     },
     listProjects: () => call(() => client.listProjects()),
     listWorkspaces: (readOptions) =>

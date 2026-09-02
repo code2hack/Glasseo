@@ -1,6 +1,7 @@
 import type {
   PaseoConnectionState,
   PaseoHostInfo,
+  PaseoDirectoryEvent,
   PaseoRuntime,
   PaseoRuntimeOptions,
 } from "../paseo/adapter";
@@ -71,8 +72,42 @@ export type HostRuntime = Pick<
   PaseoRuntime,
   "connect" | "close" | "subscribeConnection"
 >;
+export type HostDirectoryRuntime = Pick<
+  PaseoRuntime,
+  | "getHost"
+  | "listProjects"
+  | "listWorkspaces"
+  | "listAgents"
+  | "subscribeDirectory"
+>;
+export type HostRuntimeLease = {
+  serverId: string;
+  slotGeneration: number;
+  connectionEpoch: number;
+  status: HostConnectionStatus;
+  profile: StoredHostProfile;
+  runtime: HostDirectoryRuntime;
+};
+export type HostRuntimeLeaseListener = (
+  leases: readonly HostRuntimeLease[],
+) => void;
 export type HostRuntimeFactory = (options: PaseoRuntimeOptions) => HostRuntime;
 export type HostRegistryListener = (snapshot: HostRegistrySnapshot) => void;
+
+export function isHostDirectoryRuntime(
+  runtime: HostRuntime,
+): runtime is HostRuntime & HostDirectoryRuntime {
+  const candidate = runtime as HostRuntime & Partial<HostDirectoryRuntime>;
+  return (
+    typeof candidate.getHost === "function" &&
+    typeof candidate.listProjects === "function" &&
+    typeof candidate.listWorkspaces === "function" &&
+    typeof candidate.listAgents === "function" &&
+    typeof candidate.subscribeDirectory === "function"
+  );
+}
+
+export type { PaseoDirectoryEvent };
 
 export type HostClock = () => number;
 

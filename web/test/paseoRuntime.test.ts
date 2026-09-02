@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SessionOutboundMessageSchema } from "@getpaseo/protocol/messages";
+import { DirectoryCoordinator } from "../src/directory/coordinator";
+import type { DirectoryStorage } from "../src/directory/types";
+import type {
+  HostRuntimeLeaseListener,
+  StoredHostProfile,
+} from "../src/hosts/types";
 
 import {
   createPaseoRuntime,
@@ -132,7 +139,7 @@ async function connect(
   return { runtime, harness, transport };
 }
 
-test("hello uses mobile identity and only Glasseo's implemented capability", async () => {
+test("hello uses mobile identity and only Glasseo's implemented capabilities", async () => {
   const states: string[] = [];
   const harness = new Harness();
   const runtime = createPaseoRuntime(options(harness));
@@ -148,7 +155,7 @@ test("hello uses mobile identity and only Glasseo's implemented capability", asy
     Object.entries(hello.capabilities as Record<string, unknown>)
       .filter(([, enabled]) => enabled === true)
       .map(([capability]) => capability),
-    ["selective_agent_timeline"],
+    ["project_updates", "selective_agent_timeline"],
   );
   assert.deepEqual(states, ["idle", "connecting"]);
 
@@ -291,6 +298,8 @@ test("no RPC or event crosses the boundary before host acceptance", async () => 
   const runtime = createPaseoRuntime(options(harness));
   const events: string[] = [];
   runtime.subscribeEvents((event) => events.push(event.type));
+  const directoryEvents: string[] = [];
+  runtime.subscribeDirectory((event) => directoryEvents.push(event.type));
   const pending = runtime.connect();
   const transport = harness.transports[0];
   transport.open();
@@ -310,6 +319,7 @@ test("no RPC or event crosses the boundary before host acceptance", async () => 
     payload: { kind: "remove", agentId: "must-not-escape" },
   });
   assert.deepEqual(events, []);
+  assert.deepEqual(directoryEvents, []);
   transport.receive({
     type: "status",
     payload: {
@@ -537,6 +547,173 @@ test("events are validated, filtered, and stop after dispose", async () => {
   assert.equal(received.length, 7);
 });
 
+test("directory events include archive, isolate consumers, and unsubscribe", async () => {
+  const { runtime, transport } = await connect();
+  const received: string[] = [];
+  runtime.subscribeDirectory(() => {
+    throw new Error("fixture subscriber");
+  });
+  const unsubscribe = runtime.subscribeDirectory((event) =>
+    received.push(event.type),
+  );
+  transport.receive({
+    type: "agent_update",
+    payload: { kind: "remove", agentId: "agent-1" },
+  });
+  transport.receive({
+    type: "agent_deleted",
+    payload: { agentId: "agent-1", requestId: "delete-1" },
+  });
+  transport.receive({
+    type: "agent_archived",
+    payload: {
+      agentId: "agent-2",
+      archivedAt: "2026-09-03T00:00:00Z",
+      requestId: "archive-1",
+    },
+  });
+  transport.receive({
+    type: "workspace_update",
+    payload: { kind: "remove", id: "workspace-1" },
+  });
+  transport.receive({
+    type: "project.update",
+    payload: { kind: "remove", projectId: "project-1" },
+  });
+  assert.deepEqual(received, [
+    "agent_update",
+    "agent_deleted",
+    "agent_archived",
+    "workspace_update",
+    "project.update",
+  ]);
+
+  unsubscribe();
+  transport.receive({
+    type: "agent_update",
+    payload: { kind: "remove", agentId: "stale" },
+  });
+  assert.equal(received.length, 5);
+  assert.equal(runtime.getHost()?.serverId, "host-1");
+  await runtime.close();
+});
+
+test("real adapter pages exact directory RPCs into a normalized replica", async () => {
+  const { runtime, transport } = await connect();
+  const profile: StoredHostProfile = {
+    schemaVersion: 1,
+    serverId: "host-1",
+    relayEndpoint: "relay.example:443",
+    useTls: true,
+    daemonPublicKey: "fixture-public-key",
+    hostname: "fixture-host",
+    createdAt: 1,
+    updatedAt: 1,
+  };
+  const source = {
+    async restore() {},
+    subscribeRuntimeLeases(listener: HostRuntimeLeaseListener) {
+      listener([
+        {
+          serverId: "host-1",
+          slotGeneration: 1,
+          connectionEpoch: 1,
+          status: "online",
+          profile,
+          runtime,
+        },
+      ]);
+      return () => {};
+    },
+  };
+  const storage: DirectoryStorage = {
+    loadHost: async () => null,
+    listHostIds: async () => [],
+    putHost: async () => {},
+    deleteHost: async () => {},
+    getLastViewedAgent: async () => null,
+    putLastViewedAgent: async () => {},
+  };
+  const directory = new DirectoryCoordinator(source, storage);
+  const restoring = directory.restore();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const projectRequest = transport.last("project.list.request");
+  transport.reply(projectRequest, "project.list.response", {
+    projects: [projectPayload("host-1")],
+  });
+  const workspaceRequest = transport.last("fetch_workspaces_request");
+  transport.reply(workspaceRequest, "fetch_workspaces_response", {
+    entries: [workspacePayload("host-1")],
+    pageInfo: { nextCursor: "workspace-next", prevCursor: null, hasMore: true },
+  });
+  const agentRequest = transport.last("fetch_agents_request");
+  const agentResponse = {
+    type: "fetch_agents_response" as const,
+    payload: {
+      requestId: String(agentRequest.requestId),
+      entries: [agentPayload("agent-new", "2026-09-03T02:00:00Z")],
+      pageInfo: { nextCursor: "agent-next", prevCursor: null, hasMore: true },
+    },
+  };
+  const parsedAgentResponse =
+    SessionOutboundMessageSchema.safeParse(agentResponse);
+  assert.equal(
+    parsedAgentResponse.success,
+    true,
+    parsedAgentResponse.success ? "" : parsedAgentResponse.error.message,
+  );
+  transport.reply(agentRequest, "fetch_agents_response", {
+    entries: agentResponse.payload.entries,
+    pageInfo: agentResponse.payload.pageInfo,
+  });
+  for (let attempt = 0; attempt < 20; attempt++)
+    await new Promise((resolve) => setImmediate(resolve));
+
+  const sentTypes = transport.messagesSent().map(({ type }) => type);
+  assert.equal(
+    sentTypes.filter((type) => type === "fetch_agents_request").length,
+    2,
+    sentTypes.join(","),
+  );
+  assert.equal(
+    sentTypes.filter((type) => type === "fetch_workspaces_request").length,
+    2,
+    sentTypes.join(","),
+  );
+
+  const workspaceNext = transport.last("fetch_workspaces_request");
+  const agentNext = transport.last("fetch_agents_request");
+  assert.equal(
+    (workspaceNext.page as { cursor: string }).cursor,
+    "workspace-next",
+  );
+  assert.equal((agentNext.page as { cursor: string }).cursor, "agent-next");
+  assert.equal((agentNext.page as { limit: number }).limit, 200);
+  assert.deepEqual(agentNext.sort, [{ key: "updated_at", direction: "desc" }]);
+  transport.reply(workspaceNext, "fetch_workspaces_response", {
+    entries: [],
+    pageInfo: {
+      nextCursor: null,
+      prevCursor: "workspace-prev",
+      hasMore: false,
+    },
+  });
+  transport.reply(agentNext, "fetch_agents_response", {
+    entries: [agentPayload("agent-old", "2026-09-03T01:00:00Z")],
+    pageInfo: { nextCursor: null, prevCursor: "agent-prev", hasMore: false },
+  });
+  await restoring;
+
+  assert.deepEqual(
+    directory.snapshot().orderedAgents.map((agent) => agent.agentId),
+    ["agent-new", "agent-old"],
+  );
+  assert.equal(directory.snapshot().hosts.get("host-1")?.projects.size, 1);
+  assert.equal(directory.snapshot().hosts.get("host-1")?.workspaces.size, 1);
+  await runtime.close();
+});
+
 test("action wrappers preserve exact Send, Steer, Interrupt, and permission semantics", async () => {
   const { runtime, transport } = await connect();
 
@@ -714,3 +891,75 @@ test("invalid caller connection facts fail before constructing a client", () => 
       error instanceof PaseoRuntimeError && error.code === "invalid_connection",
   );
 });
+
+function projectPayload(serverId: string) {
+  return {
+    projectId: `project-${serverId}`,
+    projectKey: `key-${serverId}`,
+    projectDisplayName: `project ${serverId}`,
+    projectRootPath: `/projects/${serverId}`,
+    projectKind: "git",
+  };
+}
+
+function workspacePayload(serverId: string) {
+  return {
+    id: `workspace-${serverId}`,
+    projectId: `project-${serverId}`,
+    projectDisplayName: `project ${serverId}`,
+    projectRootPath: `/projects/${serverId}`,
+    workspaceDirectory: `/projects/${serverId}/workspace`,
+    projectKind: "git",
+    workspaceKind: "worktree",
+    name: `workspace-${serverId}`,
+    status: "done",
+    activityAt: "2026-09-03T00:00:00Z",
+    scripts: [],
+    gitRuntime: null,
+    githubRuntime: null,
+  };
+}
+
+function agentPayload(agentId: string, updatedAt: string) {
+  return {
+    agent: {
+      id: agentId,
+      provider: "codex",
+      cwd: "/workspace",
+      workspaceId: "workspace-host-1",
+      model: "gpt-fixture",
+      createdAt: "2026-09-03T00:00:00Z",
+      updatedAt,
+      lastUserMessageAt: null,
+      status: "idle",
+      activeTurn: null,
+      capabilities: {
+        supportsStreaming: true,
+        supportsSessionPersistence: true,
+        supportsDynamicModes: false,
+        supportsMcpServers: false,
+        supportsReasoningStream: true,
+        supportsToolInvocations: true,
+      },
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+      persistence: null,
+      title: agentId,
+      labels: {},
+    },
+    project: {
+      projectKey: "key-host-1",
+      projectName: "project host-1",
+      workspaceName: "workspace-host-1",
+      checkout: {
+        cwd: "/projects/host-1",
+        isGit: false,
+        currentBranch: null,
+        remoteUrl: null,
+        isPaseoOwnedWorktree: false,
+        mainRepoRoot: null,
+      },
+    },
+  };
+}
