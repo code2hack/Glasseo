@@ -11,6 +11,15 @@ sealed interface BridgeMessage {
         val interactionId: Long,
     ) : BridgeMessage
 
+    data class QualificationStart(val mode: QualificationMode) : BridgeMessage
+
+    data class QualificationRendered(
+        val sessionId: String,
+        val revision: Long,
+        val stepIndex: Int,
+        val phase: QualificationPhase,
+    ) : BridgeMessage
+
     data class ProbeResult(
         val passed: Boolean,
         val checks: Map<String, Boolean>,
@@ -41,6 +50,19 @@ sealed interface BridgeMessage {
                     Hello
                 }
                 "probe-result" -> parseProbe(json)
+                "qualification-start" -> {
+                    require(json.length() == 2) { "Malformed qualification start" }
+                    QualificationStart(QualificationMode.valueOf(json.getString("mode")))
+                }
+                "qualification-rendered" -> {
+                    require(json.length() == 5) { "Malformed qualification render acknowledgement" }
+                    QualificationRendered(
+                        json.getString("sessionId").also { require(it.isNotEmpty()) },
+                        json.getLong("revision").also { require(it > 0) },
+                        json.getInt("stepIndex").also { require(it in QualificationStep.entries.indices) },
+                        QualificationPhase.valueOf(json.getString("phase")),
+                    )
+                }
                 "semantic-received" -> {
                     require(json.length() == 4) { "Malformed semantic receipt" }
                     SemanticReceived(

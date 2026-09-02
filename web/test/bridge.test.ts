@@ -18,6 +18,23 @@ test("bridge accepts its narrow message types", () => {
     ).type,
     "semantic-received",
   );
+  assert.equal(
+    decodeNativeMessage('{"type":"qualification-start","mode":"HID"}').type,
+    "qualification-start",
+  );
+  assert.deepEqual(
+    decodeNativeMessage(
+      '{"type":"qualification-rendered","sessionId":"session-1","revision":7,' +
+        '"stepIndex":5,"phase":"AWAITING_FIRST"}',
+    ),
+    {
+      type: "qualification-rendered",
+      sessionId: "session-1",
+      revision: 7,
+      stepIndex: 5,
+      phase: "AWAITING_FIRST",
+    },
+  );
 });
 
 test("bridge rejects malformed and unknown messages", () => {
@@ -26,6 +43,7 @@ test("bridge rejects malformed and unknown messages", () => {
     "{}",
     '{"type":"other"}',
     '{"type":"probe-result"}',
+    '{"type":"qualification-rendered","sessionId":"session-1","revision":0,"stepIndex":5,"phase":"AWAITING_FIRST"}',
   ]) {
     assert.throws(() => decodeNativeMessage(value));
   }

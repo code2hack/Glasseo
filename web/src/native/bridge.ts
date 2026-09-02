@@ -19,6 +19,19 @@ export const requiredProbeChecks = [
 
 export type NativeMessage =
   | { type: "hello" }
+  | { type: "qualification-start"; mode: "BUILT_IN" | "HID" }
+  | {
+      type: "qualification-rendered";
+      sessionId: string;
+      revision: number;
+      stepIndex: number;
+      phase:
+        | "AWAITING_FIRST"
+        | "SETTLING_FIRST"
+        | "AWAITING_CONFIRMATION"
+        | "SETTLING_SECOND"
+        | "STEP_CONFIRMED";
+    }
   | ProbeResult
   | {
       type: "semantic-received";
@@ -42,6 +55,33 @@ export function decodeNativeMessage(value: string): NativeMessage {
   }
   const message = parsed as Record<string, unknown>;
   if (message.type === "hello") return { type: "hello" };
+  if (
+    message.type === "qualification-start" &&
+    Object.keys(message).length === 2 &&
+    (message.mode === "BUILT_IN" || message.mode === "HID")
+  ) {
+    return message as NativeMessage;
+  }
+  if (
+    message.type === "qualification-rendered" &&
+    Object.keys(message).length === 5 &&
+    typeof message.sessionId === "string" &&
+    message.sessionId.length > 0 &&
+    Number.isSafeInteger(message.revision) &&
+    (message.revision as number) > 0 &&
+    Number.isSafeInteger(message.stepIndex) &&
+    (message.stepIndex as number) >= 0 &&
+    (message.stepIndex as number) < 10 &&
+    [
+      "AWAITING_FIRST",
+      "SETTLING_FIRST",
+      "AWAITING_CONFIRMATION",
+      "SETTLING_SECOND",
+      "STEP_CONFIRMED",
+    ].includes(message.phase as string)
+  ) {
+    return message as NativeMessage;
+  }
   if (
     message.type === "semantic-received" &&
     Object.keys(message).length === 4 &&

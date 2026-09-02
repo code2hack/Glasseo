@@ -14,6 +14,9 @@ object ProbeState {
         private set
     @Volatile var semanticReceipt: BridgeMessage.SemanticReceived? = null
         private set
+    private val qualificationRenderHistory = mutableListOf<BridgeMessage.QualificationRendered>()
+    val qualificationRenders: List<BridgeMessage.QualificationRendered>
+        @Synchronized get() = qualificationRenderHistory.toList()
     private var latch = CountDownLatch(1)
     private var semanticLatch = CountDownLatch(1)
 
@@ -23,6 +26,7 @@ object ProbeState {
         blockedNavigations = 0
         rendererGone = 0
         semanticReceipt = null
+        qualificationRenderHistory.clear()
         latch = CountDownLatch(1)
         semanticLatch = CountDownLatch(1)
     }
@@ -38,6 +42,8 @@ object ProbeState {
                 semanticReceipt = message
                 semanticLatch.countDown()
             }
+            is BridgeMessage.QualificationStart -> Unit
+            is BridgeMessage.QualificationRendered -> qualificationRenderHistory += message
         }
     }
 

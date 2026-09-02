@@ -1,27 +1,31 @@
 package com.code2hack.glasseo
 
-import android.view.KeyEvent
+data class HidPhysicalIdentity(
+    val descriptor: String,
+    val vendorId: Int,
+    val productId: Int,
+    val keyCode: Int,
+    val scanCode: Int,
+)
 
-interface HidBindingProvider {
-    fun controlFor(keyCode: Int): SemanticControl?
-}
+class HidBindingMap {
+    private val bindings = mutableMapOf<SemanticControl, HidPhysicalIdentity>()
 
-class QualificationHidBindings : HidBindingProvider {
-    private val bindings = mapOf(
-        KeyEvent.KEYCODE_ENTER to SemanticControl.PRIMARY,
-        KeyEvent.KEYCODE_DEL to SemanticControl.SECONDARY,
-        KeyEvent.KEYCODE_SPACE to SemanticControl.COMMAND,
-        KeyEvent.KEYCODE_DPAD_LEFT to SemanticControl.LEFT,
-        KeyEvent.KEYCODE_DPAD_RIGHT to SemanticControl.RIGHT,
-        KeyEvent.KEYCODE_DPAD_UP to SemanticControl.UP,
-        KeyEvent.KEYCODE_DPAD_DOWN to SemanticControl.DOWN,
-    )
+    val size: Int
+        get() = bindings.size
 
-    override fun controlFor(keyCode: Int): SemanticControl? = bindings[keyCode]
-}
+    fun bind(control: SemanticControl, identity: HidPhysicalIdentity): Boolean {
+        if (bindings.any { (boundControl, boundIdentity) -> boundControl != control && boundIdentity == identity }) {
+            return false
+        }
+        val current = bindings[control]
+        if (current != null) return current == identity
+        bindings[control] = identity
+        return true
+    }
 
-class BuiltInKeyBindings(
-    private val bindings: Map<Int, SemanticControl> = emptyMap(),
-) {
-    fun controlFor(keyCode: Int): SemanticControl? = bindings[keyCode]
+    fun identityFor(control: SemanticControl): HidPhysicalIdentity? = bindings[control]
+
+    fun controlFor(identity: HidPhysicalIdentity): SemanticControl? =
+        bindings.entries.firstOrNull { it.value == identity }?.key
 }

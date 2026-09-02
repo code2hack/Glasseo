@@ -14,6 +14,17 @@ class BridgeMessageTest {
             BridgeMessage.SemanticReceived(SemanticControl.PRIMARY, SemanticAction.SHORT, 7),
             BridgeMessage.parse("{\"type\":\"semantic-received\",\"control\":\"PRIMARY\",\"action\":\"SHORT\",\"interactionId\":7}"),
         )
+        assertEquals(
+            BridgeMessage.QualificationStart(QualificationMode.HID),
+            BridgeMessage.parse("{\"type\":\"qualification-start\",\"mode\":\"HID\"}"),
+        )
+        assertEquals(
+            BridgeMessage.QualificationRendered("session-1", 7, 5, QualificationPhase.AWAITING_FIRST),
+            BridgeMessage.parse(
+                "{\"type\":\"qualification-rendered\",\"sessionId\":\"session-1\",\"revision\":7," +
+                    "\"stepIndex\":5,\"phase\":\"AWAITING_FIRST\"}",
+            ),
+        )
     }
 
     @Test fun rejectsMalformedAndUnknownMessages() {
@@ -23,6 +34,9 @@ class BridgeMessageTest {
             "{\"type\":\"hello\",\"extra\":true}",
             "{\"type\":\"semantic-received\",\"control\":\"OTHER\",\"action\":\"SHORT\",\"interactionId\":7}",
             "{\"type\":\"semantic-received\",\"control\":\"PRIMARY\",\"action\":\"SHORT\",\"interactionId\":0}",
+            "{\"type\":\"qualification-start\",\"mode\":\"OTHER\"}",
+            "{\"type\":\"qualification-rendered\",\"sessionId\":\"\",\"revision\":7," +
+                "\"stepIndex\":5,\"phase\":\"AWAITING_FIRST\"}",
             passingProbe().replace("\"passed\":true", "\"passed\":\"true\""),
             passingProbe().replace("\"secureRandom\":true", "\"secureRandom\":\"true\""),
         ).forEach {

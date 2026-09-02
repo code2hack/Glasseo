@@ -5,10 +5,14 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class WebViewQualificationTest {
@@ -41,4 +45,155 @@ class WebViewQualificationTest {
             )
         }
     }
+
+    @Test fun orderedInterceptionStartsWithProcessAndSurvivesActivityRecreation() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            lateinit var application: GlasseoApplication
+            lateinit var interception: PersistentOrderedBroadcastInterception
+            scenario.onActivity { activity ->
+                application = activity.application as GlasseoApplication
+                interception = application.orderedInterception
+                assertTrue(interception.started)
+            }
+
+            scenario.recreate()
+
+            scenario.onActivity { activity ->
+                assertTrue(activity.application === application)
+                assertTrue((activity.application as GlasseoApplication).orderedInterception === interception)
+                assertTrue(interception.started)
+            }
+        }
+    }
+
+    @Test fun realBridgeRendersAndAcknowledgesShortCommandThroughLongCommandToUp() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            assertNotNull(ProbeState.await(60))
+            scenario.onActivity { it.startQualificationForTest(QualificationStep.SHORT_COMMAND) }
+            awaitState(scenario, QualificationStep.SHORT_COMMAND, QualificationPhase.AWAITING_FIRST, armed = true)
+            assertEquals("5/10 Short COMMAND|Perform the intended action", readDom(scenario))
+
+            submit(scenario, shortCommand())
+            awaitRendered(QualificationStep.SHORT_COMMAND, QualificationPhase.SETTLING_FIRST)
+            submitAfterReady(scenario, QualificationStep.SHORT_COMMAND, shortCommand())
+            awaitRendered(QualificationStep.SHORT_COMMAND, QualificationPhase.SETTLING_SECOND)
+            awaitState(scenario, QualificationStep.LONG_COMMAND, QualificationPhase.AWAITING_FIRST, armed = true)
+            assertEquals("6/10 Long COMMAND|Perform the intended action", readDom(scenario))
+
+            submit(scenario, longCommand())
+            awaitRendered(QualificationStep.LONG_COMMAND, QualificationPhase.SETTLING_FIRST)
+            submitAfterReady(scenario, QualificationStep.LONG_COMMAND, longCommand())
+            awaitRendered(QualificationStep.LONG_COMMAND, QualificationPhase.SETTLING_SECOND)
+            awaitState(scenario, QualificationStep.UP, QualificationPhase.AWAITING_FIRST, armed = true)
+            assertEquals("7/10 UP|Perform the intended action", readDom(scenario))
+        }
+    }
+
+    @Test fun recreationAndReloadReplayCurrentRevisionBeforeRearming() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            assertNotNull(ProbeState.await(60))
+            scenario.onActivity { it.startQualificationForTest(QualificationStep.SHORT_COMMAND) }
+            val before = awaitState(
+                scenario,
+                QualificationStep.SHORT_COMMAND,
+                QualificationPhase.AWAITING_FIRST,
+                armed = true,
+            )
+
+            scenario.recreate()
+            val recreated = awaitState(
+                scenario,
+                QualificationStep.SHORT_COMMAND,
+                QualificationPhase.AWAITING_FIRST,
+                armed = true,
+            )
+            assertEquals(before.sessionId, recreated.sessionId)
+            assertEquals(before.revision, recreated.revision)
+
+            scenario.onActivity {
+                it.reloadQualificationForTest()
+                assertFalse((it.application as GlasseoApplication).qualificationSession!!.armed)
+            }
+            val reloaded = awaitState(
+                scenario,
+                QualificationStep.SHORT_COMMAND,
+                QualificationPhase.AWAITING_FIRST,
+                armed = true,
+            )
+            assertEquals(before.revision, reloaded.revision)
+            assertEquals("5/10 Short COMMAND|Perform the intended action", readDom(scenario))
+        }
+    }
+
+    private fun submitAfterReady(
+        scenario: ActivityScenario<MainActivity>,
+        step: QualificationStep,
+        operation: QualificationOperation,
+    ) {
+        awaitState(scenario, step, QualificationPhase.AWAITING_CONFIRMATION, armed = true)
+        submit(scenario, operation)
+    }
+
+    private fun submit(scenario: ActivityScenario<MainActivity>, operation: QualificationOperation) {
+        scenario.onActivity { assertTrue(it.submitQualificationForTest(operation)) }
+    }
+
+    private fun awaitRendered(step: QualificationStep, phase: QualificationPhase) {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            if (ProbeState.qualificationRenders.any { it.stepIndex == step.ordinal && it.phase == phase }) return
+            Thread.sleep(50)
+        }
+        throw AssertionError("Web did not acknowledge $step $phase: ${ProbeState.qualificationRenders}")
+    }
+
+    private fun awaitState(
+        scenario: ActivityScenario<MainActivity>,
+        step: QualificationStep,
+        phase: QualificationPhase,
+        armed: Boolean,
+    ): QualificationSnapshot {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline) {
+            var snapshot: QualificationSnapshot? = null
+            var isArmed = false
+            scenario.onActivity {
+                val session = (it.application as GlasseoApplication).qualificationSession
+                snapshot = session?.snapshot
+                isArmed = session?.armed == true
+            }
+            if (snapshot?.step == step && snapshot?.phase == phase && isArmed == armed) return snapshot!!
+            Thread.sleep(50)
+        }
+        throw AssertionError("Native state did not reach $step $phase armed=$armed")
+    }
+
+    private fun readDom(scenario: ActivityScenario<MainActivity>): String {
+        val latch = CountDownLatch(1)
+        var value = ""
+        scenario.onActivity { activity ->
+            activity.readQualificationDomForTest {
+                value = JSONObject("{\"value\":$it}").getString("value")
+                latch.countDown()
+            }
+        }
+        assertTrue(latch.await(10, TimeUnit.SECONDS))
+        return value
+    }
+
+    private fun shortCommand() = operation(BehaviorClass.SHORT, "com.android.action.ACTION_SPRITE_BUTTON_UP")
+    private fun longCommand() = operation(BehaviorClass.LONG, "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS")
+
+    private fun operation(behavior: BehaviorClass, action: String) = QualificationOperation(
+        BuiltInOperationSignature(
+            behavior,
+            emptyList(),
+            emptyList(),
+            listOf(CapturedBroadcast(action, 0x50000010, true)),
+            false,
+            emptySet(),
+            emptySet(),
+        ),
+        suppression = SuppressionOutcome.SUCCEEDED,
+    )
 }
