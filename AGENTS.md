@@ -193,24 +193,26 @@ Every Worker spawn prompt includes:
 - required build, test, and verification commands from `DEV.md`;
 - human-gate and reporting procedure.
 
-**Mandatory delivery-and-liveness verification:** every direct Manager↔Worker message has two independent conditions that MUST both be verified by the sender **before the sender may end the current turn or continue to unrelated work**:
+**Mandatory delivery-and-working verification:** every direct Manager↔Worker work message has two independent conditions that MUST both be verified by the sender **before the sender may end the current turn or continue to unrelated work**:
 
-1. **`DELIVERED`** — the complete intended message has actually been submitted to the intended receiver, not merely typed, injected, or queued toward an assumed target.
-2. **`RECEIVER_RUNNING`** — after submission, the intended receiving Codex thread/process is demonstrably still alive and running in the intended tmux target and is in a state capable of accepting/processing the submitted work. A tmux pane that merely exists is not sufficient. A pane whose Codex process has exited, crashed, terminated, fallen back to an ordinary shell prompt, or otherwise cannot process the message fails this condition.
+1. **`DELIVERED`** — the complete intended message has actually been submitted to the exact intended receiver, not merely typed, injected, pasted, queued toward an assumed target, or left in the receiver's composer.
+2. **`RECEIVER_WORKING`** — after `DELIVERED`, the exact receiving Codex thread is demonstrably busy/working on an in-progress turn. Merely proving that the tmux pane, Codex process, or thread is alive, loaded, or top-level `active` is not sufficient.
 
-This rule applies identically in both directions and includes Worker spawn prompts, implementation instructions, corrections, questions, blocker/human-gate reports, progress reports, completion reports, acknowledgements that carry work-critical information, and every other direct Manager↔Worker work message.
+This rule applies identically in both directions and includes Worker spawn prompts, implementation instructions, amendments, corrections, questions, blocker/human-gate reports, progress reports, completion reports, acknowledgements that carry work-critical information, and every other direct Manager↔Worker work message.
 
-Codex UI/status wording may change between versions. The protocol therefore does not depend on one exact status label: `RECEIVER_RUNNING` means the equivalent observable condition that the intended Codex thread/process is live and able to accept/process the work. A receiver that is currently busy/processing may satisfy this condition only when the transport demonstrably accepts the submitted message for that same live Codex thread; sender-side command success alone is never sufficient.
+The sender MUST check the receiver's actual Codex work state after submission. Use the most authoritative state interface available for that installed Codex version. With the current Codex app-server model, positive `RECEIVER_WORKING` evidence is a receiver turn that has actually begun running — for example a `turn/started` notification for the target thread with that turn in `inProgress`, or an equivalent direct thread/turn inspection showing the receiver has an in-progress running turn. The top-level thread state `active` by itself does **not** satisfy this rule. A receiver that is waiting for approval or waiting for user input does **not** satisfy `RECEIVER_WORKING` even though its thread may still be `active`.
 
-For tmux communication, merely issuing `send-keys`/an injection command, receiving a successful shell exit code, observing that the tmux target exists, or seeing only part of the message is **not** sufficient evidence. The sender MUST, after submission:
+For tmux/TUI communication, merely issuing `send-keys`/an injection command, receiving a successful shell exit code, observing that the tmux target exists, observing a live Codex process, seeing only part of the message, or observing a pre-existing/stale `Working`/`active` state is **not** sufficient evidence. The sender MUST, after submission:
 
-1. verify the exact intended tmux session/window/pane still exists;
-2. obtain evidence that the **complete** message was submitted to that receiver, such as the complete message appearing in the receiver's Codex pane or an equivalent transport-level confirmation; and
-3. verify that the receiving Codex thread/process is still `RECEIVER_RUNNING` as defined above.
+1. verify the exact intended tmux session/window/pane and receiving Codex thread identity;
+2. obtain evidence that the **complete** message was submitted as receiver input; and
+3. verify that the receiving Codex thread is `RECEIVER_WORKING` after that submission.
 
-Only after all three checks pass may the sender treat the communication as complete, end the current turn, or move on to another job. Receiver acknowledgement is useful additional evidence but does not replace either `DELIVERED` or `RECEIVER_RUNNING`.
+If the receiver was idle before submission, the expected proof is an idle/not-working → running/working transition for the receiver after the message is submitted. If the receiver was already working before submission, the pre-existing working state cannot prove the new message was acted on. The sender must obtain evidence that the new submitted message was admitted to the live receiver — for example by correlation to the receiver's current turn/steer admission when such correlation is available, or by waiting until the submitted input begins its own running turn. If the installed transport cannot correlate a new message while the receiver is already working, the sender must not treat the unchanged busy state as verification.
 
-If either condition cannot be verified, the sender MUST stop normal progress on that communication path, retry or repair the target/process, and re-submit as necessary. The sender MUST NOT end the turn, start unrelated work, spawn the next Worker, merge/close based on the unverified message, or report the message as delivered. If the receiver cannot be restored to a running/accepting state or the communication path remains unavailable, escalate through the documented Manager/ALARM procedure while preserving safe state.
+Only after both `DELIVERED` and `RECEIVER_WORKING` pass may the sender treat the communication as complete, end the current turn, or move on to another job. A later receiver acknowledgement is useful additional evidence but does not replace either condition.
+
+If either condition cannot be verified, the sender MUST stop normal progress on that communication path, inspect/retry/repair the target or receiver state, and re-submit only when doing so cannot duplicate an already-admitted message. The sender MUST NOT end the turn, start unrelated work, spawn the next Worker, merge/close based on the unverified message, or report the communication as complete. If the receiver cannot be brought into a verified working state for the submitted message or the communication path remains unavailable, escalate through the documented Manager/ALARM procedure while preserving safe state.
 
 Worker reports begin with the Worker identity. The Manager records important Worker findings on the issue or pull request.
 
@@ -341,7 +343,7 @@ For each `PLANNED` ticket selected for dispatch, the Manager performs these step
 2. Fetch canonical remote `main` and make the current `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` available to the Worker as read-only project references.
 3. Spawn exactly one Worker for that issue.
 4. Provide the Worker with the issue URL, CTO plan comment, assigned host and profile, branch/worktree instructions, required project documents, Manager tmux coordinates, tests, verification requirements, and reporting/human-gate procedure.
-5. Verify the complete spawn message is `DELIVERED` and the intended Worker is `RECEIVER_RUNNING` according to Section 4.2.
+5. Verify the complete spawn message is `DELIVERED` and the intended Worker is `RECEIVER_WORKING` according to Section 4.2.
 6. Record the Worker identity and work state on the issue.
 7. Only then proceed to spawn the next planned Worker.
 
@@ -357,7 +359,7 @@ A Worker follows this loop:
 2. Confirm that the implementation worktree has no intentional diff to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md`.
 3. Implement the CTO plan.
 4. Run required build, test, verification, and debugging commands.
-5. Report any blocker, article-change need, or human gate to the Manager instead of editing a project article, and verify both `DELIVERED` and Manager `RECEIVER_RUNNING` according to Section 4.2 before ending the turn or continuing other work.
+5. Report any blocker, article-change need, or human gate to the Manager instead of editing a project article, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
 6. Update implementation and tests until acceptance criteria pass.
 7. Before commit/push, fetch remote `main` again, re-check any article changes that affect the work, and ensure the four project articles are absent from the implementation diff.
 8. Commit and push the assigned branch.
@@ -368,7 +370,7 @@ A Worker follows this loop:
    - real-device or integration evidence;
    - known limitations or residual risks;
    - deviations from the CTO plan, if any.
-10. Verify both `DELIVERED` and Manager `RECEIVER_RUNNING` for the completion report according to Section 4.2 before ending the turn.
+10. Verify both `DELIVERED` and Manager `RECEIVER_WORKING` for the completion report according to Section 4.2 before ending the turn.
 
 ## 9. Pull request, review, and correction loop
 
@@ -384,7 +386,7 @@ When review returns `CHANGES_REQUESTED`:
 
 1. The CTO writes a concrete correction plan on the issue or pull request.
 2. The CTO informs the Manager through `$ask-chatgpt`.
-3. The Manager re-dispatches the correction plan to the same Worker and verifies both `DELIVERED` and Worker `RECEIVER_RUNNING` according to Section 4.2 before ending the turn or continuing other work.
+3. The Manager re-dispatches the correction plan to the same Worker and verifies both `DELIVERED` and Worker `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
 4. The Worker updates, tests, commits, pushes, and reports again.
 5. The loop repeats until the CTO records `PASS`.
 
