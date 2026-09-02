@@ -46,6 +46,7 @@ tasks.configureEach {
 
 dependencies {
     implementation("androidx.webkit:webkit:1.17.0")
+    implementation("com.google.zxing:core:3.5.4")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

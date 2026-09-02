@@ -4,6 +4,8 @@ import org.json.JSONObject
 
 sealed interface BridgeMessage {
     data object Hello : BridgeMessage
+    data object ScannerStart : BridgeMessage
+    data object ScannerCancel : BridgeMessage
 
     data class SemanticReceived(
         val control: SemanticControl,
@@ -56,6 +58,14 @@ sealed interface BridgeMessage {
                 "hello" -> {
                     require(json.length() == 1) { "Malformed hello" }
                     Hello
+                }
+                "scanner-start" -> {
+                    require(json.length() == 1) { "Malformed scanner start" }
+                    ScannerStart
+                }
+                "scanner-cancel" -> {
+                    require(json.length() == 1) { "Malformed scanner cancel" }
+                    ScannerCancel
                 }
                 "probe-result" -> parseProbe(json)
                 "qualification-start" -> {

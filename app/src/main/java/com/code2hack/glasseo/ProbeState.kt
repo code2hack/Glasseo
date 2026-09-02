@@ -38,6 +38,7 @@ object ProbeState {
     @Synchronized fun record(message: BridgeMessage) {
         when (message) {
             BridgeMessage.Hello -> helloCount++
+            BridgeMessage.ScannerStart, BridgeMessage.ScannerCancel -> Unit
             is BridgeMessage.ProbeResult -> {
                 result = message
                 latch.countDown()

@@ -1,5 +1,6 @@
 package com.code2hack.glasseo
 
+import android.Manifest
 import android.app.Activity
 import android.annotation.SuppressLint
 import android.content.BroadcastReceiver
@@ -7,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Bitmap
 import android.hardware.input.InputManager
@@ -41,6 +43,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var webView: WebView
     private lateinit var inputManager: InputManager
     private lateinit var inputController: HudInputController
+    private lateinit var qrScannerController: QrScannerController
     private val handler = Handler(Looper.getMainLooper())
     private val longPressCheck = Runnable {
         val now = SystemClock.uptimeMillis()
@@ -156,6 +159,17 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             webView.visibility = if (visible) View.VISIBLE else View.INVISIBLE
             trace("hud", if (visible) "visible" else "hidden")
         })
+        qrScannerController = QrScannerController(
+            hasPermission = { checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED },
+            requestPermission = { requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST) },
+            openSession = { result, error ->
+                QrCameraSession(this, root, result, error) { detail -> trace("scanner-camera", detail) }
+            },
+            emit = { event ->
+                postNative(NativeQrScannerMessage.encode(event))
+                trace("scanner", scannerTelemetry(event))
+            },
+        )
         inputManager = getSystemService(Context.INPUT_SERVICE) as InputManager
         inputManager.inputDeviceIds.forEach(::rememberDevice)
         inputManager.registerInputDeviceListener(this, handler)
@@ -177,12 +191,14 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     override fun onPause() {
+        if (::qrScannerController.isInitialized) qrScannerController.onActivityPause()
         recordQualificationLifecycle("pause")
         cancelInputs("pause")
         super.onPause()
     }
 
     override fun onStop() {
+        if (::qrScannerController.isInitialized) qrScannerController.cancel()
         recordQualificationLifecycle("stop")
         cancelInputs("stop")
         super.onStop()
@@ -200,6 +216,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
 
     override fun onDestroy() {
+        if (::qrScannerController.isInitialized) qrScannerController.cancel()
         handler.removeCallbacks(longPressCheck)
         handler.removeCallbacks(finishBuiltInCapture)
         hidAttemptWatchdog?.let(handler::removeCallbacks)
@@ -211,6 +228,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         trace("lifecycle", "destroy")
         webView.destroy()
         super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST) {
+            qrScannerController.onPermissionResult(grantResults.singleOrNull() == PackageManager.PERMISSION_GRANTED)
+        }
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -333,6 +357,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                             postActiveQualificationState("web-ready")
                             postHidInputTrace()
                         }
+                        BridgeMessage.ScannerStart -> qrScannerController.start()
+                        BridgeMessage.ScannerCancel -> qrScannerController.cancel()
                         is BridgeMessage.QualificationStart -> if (captureInput) startQualification(it.mode)
                         is BridgeMessage.QualificationRendered -> acknowledgeQualificationRender(it)
                         is BridgeMessage.HidQualificationRendered -> acknowledgeHidQualificationRender(it)
@@ -390,6 +416,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 webReady = false
+                qrScannerController.cancel()
                 cancelInputs("renderer-gone")
                 ProbeState.recordRendererGone()
                 trace("renderer-gone", "crashed=${detail.didCrash()}")
@@ -718,6 +745,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         )
     }
 
+    private fun scannerTelemetry(event: QrScannerEvent): String = when (event) {
+        is QrScannerEvent.State -> "state=${event.state.wireValue}"
+        is QrScannerEvent.Result -> "result=decoded"
+        is QrScannerEvent.Error -> "error=${event.code.wireValue}"
+        QrScannerEvent.Cancelled -> "cancelled"
+    }
+
     private fun KeyEvent.physicalAction(): PhysicalAction? = when (action) {
         KeyEvent.ACTION_DOWN -> if (repeatCount == 0) PhysicalAction.DOWN else PhysicalAction.REPEAT
         KeyEvent.ACTION_UP -> if (isCanceled) PhysicalAction.CANCEL else PhysicalAction.UP
@@ -866,6 +900,20 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         webView.evaluateJavascript("document.querySelector('.hid-input-trace')?.textContent ?? ''", callback)
     }
 
+    internal fun evaluateJavascriptForTest(script: String) {
+        webView.evaluateJavascript(script, null)
+    }
+
+    internal fun readPairingStateForTest(callback: (String) -> Unit) {
+        webView.evaluateJavascript("document.querySelector('#pairing-state')?.textContent ?? ''", callback)
+    }
+
+    internal fun scannerActiveForTest(): Boolean = qrScannerController.isActive
+
+    internal fun postScannerEventForTest(event: QrScannerEvent) {
+        postNative(NativeQrScannerMessage.encode(event))
+    }
+
     private fun scheduleDeadline() {
         handler.removeCallbacks(longPressCheck)
         inputController.nextDeadlineMillis?.let { handler.postAtTime(longPressCheck, it) }
@@ -975,6 +1023,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         const val QUALIFICATION_PAUSE_STEP_EXTRA = "qualification_pause_at_step"
         const val QUALIFICATION_PAUSE_PHASE_EXTRA = "qualification_pause_at_phase"
         const val QUALIFICATION_RESUME_EXTRA = "qualification_resume"
+        private const val CAMERA_PERMISSION_REQUEST = 501
         const val HID_ATTEMPT_ACTION = "com.code2hack.glasseo.DEBUG_HID_ATTEMPT"
         const val HID_ATTEMPT_ID_EXTRA = "attemptId"
         const val HID_ATTEMPT_OPERATION_EXTRA = "operation"

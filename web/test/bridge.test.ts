@@ -8,6 +8,12 @@ import {
 
 test("bridge accepts its narrow message types", () => {
   assert.deepEqual(decodeNativeMessage('{"type":"hello"}'), { type: "hello" });
+  assert.deepEqual(decodeNativeMessage('{"type":"scanner-start"}'), {
+    type: "scanner-start",
+  });
+  assert.deepEqual(decodeNativeMessage('{"type":"scanner-cancel"}'), {
+    type: "scanner-cancel",
+  });
   assert.equal(
     decodeNativeMessage(JSON.stringify(probeResult())).type,
     "probe-result",

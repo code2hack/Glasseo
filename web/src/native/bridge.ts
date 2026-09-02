@@ -19,6 +19,8 @@ export const requiredProbeChecks = [
 
 export type NativeMessage =
   | { type: "hello" }
+  | { type: "scanner-start" }
+  | { type: "scanner-cancel" }
   | { type: "qualification-start"; mode: "BUILT_IN" | "HID" }
   | {
       type: "qualification-rendered";
@@ -63,6 +65,11 @@ export function decodeNativeMessage(value: string): NativeMessage {
   }
   const message = parsed as Record<string, unknown>;
   if (message.type === "hello") return { type: "hello" };
+  if (
+    (message.type === "scanner-start" || message.type === "scanner-cancel") &&
+    Object.keys(message).length === 1
+  )
+    return message as NativeMessage;
   if (
     message.type === "qualification-start" &&
     Object.keys(message).length === 2 &&
