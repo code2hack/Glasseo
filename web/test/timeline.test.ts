@@ -89,6 +89,83 @@ test("tail, live catch-up, duplicates, older anchors, and host identity stay can
   );
 });
 
+test("binding reapplies selective delivery for a reconnected runtime epoch", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const runtime = leaseRuntime(key.agentId);
+  runtime.responses.push(
+    page(key.agentId, "tail", 1, 1),
+    page(key.agentId, "after", 2, 2),
+  );
+  const directory = new FakeDirectorySource(directorySnapshot([key], key));
+  const leases = new FakeLeaseSource([hostLease(key.serverId, runtime)]);
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  const dispose = bindTimeline(coordinator, directory, leases);
+  await settle();
+  assert.deepEqual(coordinator.currentSubscriptionTarget(), key);
+
+  const staleClear = deferred<void>();
+  const epochTwoSubscription = deferred<void>();
+  runtime.subscriptionImpl = (agentIds) =>
+    agentIds.length === 0 ? staleClear.promise : epochTwoSubscription.promise;
+  leases.emit([{ ...hostLease(key.serverId, runtime), status: "offline" }]);
+  leases.emit([{ ...hostLease(key.serverId, runtime), connectionEpoch: 2 }]);
+  await settle();
+  assert.equal(coordinator.currentSubscriptionTarget(), null);
+
+  staleClear.reject(new Error("disconnected before clear"));
+  await settle();
+  assert.deepEqual(runtime.subscriptionRequests, [
+    [key.agentId],
+    [],
+    [key.agentId],
+  ]);
+  assert.equal(coordinator.currentSubscriptionTarget(), null);
+
+  epochTwoSubscription.resolve();
+  await settle();
+  assert.deepEqual(coordinator.currentSubscriptionTarget(), key);
+  runtime.emit(stream(key.agentId, 2));
+  await settle();
+  assert.equal(coordinator.currentSnapshot()?.range?.endSeq, 2);
+  assert.equal(coordinator.currentSnapshot()?.rows.at(-1)?.provisional, false);
+  dispose();
+});
+
+test("a stale successful subscription cannot satisfy a newer runtime epoch", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const runtime = leaseRuntime(key.agentId);
+  runtime.responses.push(page(key.agentId, "tail", 1, 1));
+  const staleEpochOne = deferred<void>();
+  const epochTwoSubscription = deferred<void>();
+  let agentAttempt = 0;
+  runtime.subscriptionImpl = (agentIds) => {
+    if (agentIds.length === 0) return Promise.resolve();
+    return ++agentAttempt === 1
+      ? staleEpochOne.promise
+      : epochTwoSubscription.promise;
+  };
+  const directory = new FakeDirectorySource(directorySnapshot([key], key));
+  const leases = new FakeLeaseSource([hostLease(key.serverId, runtime)]);
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  const dispose = bindTimeline(coordinator, directory, leases);
+  await settle();
+
+  leases.emit([{ ...hostLease(key.serverId, runtime), status: "offline" }]);
+  leases.emit([{ ...hostLease(key.serverId, runtime), connectionEpoch: 2 }]);
+  staleEpochOne.resolve();
+  await settle();
+  assert.deepEqual(runtime.subscriptionRequests, [
+    [key.agentId],
+    [key.agentId],
+  ]);
+  assert.equal(coordinator.currentSubscriptionTarget(), null);
+
+  epochTwoSubscription.resolve();
+  await settle();
+  assert.deepEqual(coordinator.currentSubscriptionTarget(), key);
+  dispose();
+});
+
 test("cache is display-only, buffered live wins, and stale completions cannot cross activation", async () => {
   const key = { serverId: "alpha", agentId: "agent" };
   const storage = new MemoryStorage();
@@ -391,6 +468,51 @@ test("live input arriving during multi-page catch-up remains canonical", async (
   );
 });
 
+test("a refreshed authority starts catch-up while its invalidated job is unresolved", async () => {
+  const runtime = new FakeRuntime();
+  runtime.responses.push(page("agent", "tail", 1, 1));
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  await coordinator.activate(
+    activation({ serverId: "alpha", agentId: "agent" }, runtime),
+  );
+
+  const oldAfter = deferred<PaseoTimeline>();
+  const refreshedTail = deferred<PaseoTimeline>();
+  const currentAfter = deferred<PaseoTimeline>();
+  runtime.impl = (options) => {
+    if (options.direction === "tail") return refreshedTail.promise;
+    if (options.cursor?.seq === 1) return oldAfter.promise;
+    return currentAfter.promise;
+  };
+  runtime.emit(stream("agent", 3));
+  await settle();
+  const refresh = coordinator.refresh();
+  runtime.emit(stream("agent", 5));
+  refreshedTail.resolve(page("agent", "tail", 1, 3));
+  await refresh;
+  await settle();
+  assert.equal(
+    runtime.requests.some(
+      ({ direction, cursor }) => direction === "after" && cursor?.seq === 3,
+    ),
+    true,
+  );
+
+  oldAfter.resolve(page("agent", "after", 2, 3));
+  await settle();
+  assert.equal(coordinator.currentSnapshot()?.range?.endSeq, 3);
+  assert.equal(coordinator.currentSnapshot()?.catchingUp, true);
+
+  currentAfter.resolve(page("agent", "after", 4, 5));
+  await settle();
+  assert.equal(coordinator.currentSnapshot()?.range?.endSeq, 5);
+  assert.equal(
+    coordinator.currentSnapshot()?.rows.some(({ provisional }) => provisional),
+    false,
+  );
+  assert.equal(coordinator.currentSnapshot()?.catchingUp, false);
+});
+
 test("concurrent older requests coalesce by the certified start cursor", async () => {
   const runtime = new FakeRuntime();
   runtime.responses.push(page("agent", "tail", 3, 4, { hasOlder: true }));
@@ -645,10 +767,12 @@ test("acceptance status hashes identities and never returns timeline content", a
 class FakeRuntime implements TimelineRuntime {
   readonly listeners = new Set<(event: PaseoTimelineEvent) => void>();
   readonly subscriptions: string[][] = [];
+  readonly subscriptionRequests: string[][] = [];
   readonly requests: PaseoTimelineOptions[] = [];
   readonly responses: PaseoTimeline[] = [];
   subscriptionFailures = 0;
   subscriptionAttempts = 0;
+  subscriptionImpl: ((agentIds: string[]) => Promise<void>) | null = null;
   impl: ((options: PaseoTimelineOptions) => Promise<PaseoTimeline>) | null =
     null;
 
@@ -665,6 +789,8 @@ class FakeRuntime implements TimelineRuntime {
 
   async setTimelineSubscription(agentIds: string[]): Promise<void> {
     this.subscriptionAttempts++;
+    this.subscriptionRequests.push(agentIds);
+    if (this.subscriptionImpl) await this.subscriptionImpl(agentIds);
     if (this.subscriptionFailures-- > 0)
       throw new Error("Fixture subscription failure");
     this.subscriptions.push(agentIds);

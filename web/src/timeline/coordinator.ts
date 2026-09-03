@@ -34,7 +34,20 @@ type Replica = {
   buffer: PaseoTimelineEvent[] | null;
   tail: Promise<void> | null;
   older: Promise<OlderAnchor> | null;
-  catchup: Promise<void> | null;
+  catchup: CatchupJob | null;
+};
+
+type CatchupJob = {
+  promise: Promise<void>;
+  generation: number;
+  authorityGeneration: number;
+  source: TimelineSourceToken;
+  cursor: { epoch: string; seq: number };
+};
+
+type SubscriptionDemand = {
+  agentIds: readonly string[];
+  sourceToken: TimelineSourceToken | null;
 };
 
 export class TimelineCoordinator {
@@ -44,11 +57,11 @@ export class TimelineCoordinator {
   >();
   private readonly desiredSubscriptions = new Map<
     TimelineRuntime,
-    readonly string[]
+    SubscriptionDemand
   >();
   private readonly appliedSubscriptions = new Map<
     TimelineRuntime,
-    readonly string[]
+    SubscriptionDemand
   >();
   private readonly subscriptionJobs = new Map<TimelineRuntime, Promise<void>>();
   private current: AgentKey | null = null;
@@ -78,12 +91,7 @@ export class TimelineCoordinator {
 
   currentSubscriptionTarget(): AgentKey | null {
     const state = this.current ? this.replica(this.current) : null;
-    return state?.runtime &&
-      this.appliedSubscriptions
-        .get(state.runtime)
-        ?.includes(state.snapshot.key.agentId)
-      ? state.snapshot.key
-      : null;
+    return state && this.subscriptionReady(state) ? state.snapshot.key : null;
   }
 
   subscribe(
@@ -102,7 +110,7 @@ export class TimelineCoordinator {
       sameToken(previous.snapshot.sourceToken, activation.sourceToken) &&
       previous.runtime === activation.runtime
     )
-      return previous.tail ?? previous.catchup ?? Promise.resolve();
+      return previous.tail ?? previous.catchup?.promise ?? Promise.resolve();
 
     if (previous) this.release(previous);
     this.current = { ...activation.key };
@@ -132,7 +140,11 @@ export class TimelineCoordinator {
       if (state.buffer) state.buffer.push(event);
       else this.applyLive(state, generation, activation.sourceToken, event);
     });
-    this.setDesiredSubscription(activation.runtime, [activation.key.agentId]);
+    this.setDesiredSubscription(
+      activation.runtime,
+      [activation.key.agentId],
+      activation.sourceToken,
+    );
     this.publish();
 
     await this.loadCache(state, generation, activation.sourceToken);
@@ -151,7 +163,11 @@ export class TimelineCoordinator {
     const state = this.current ? this.replica(this.current) : null;
     const source = state?.snapshot.sourceToken;
     if (!state || !source || !state.runtime) return Promise.resolve();
-    this.setDesiredSubscription(state.runtime, [state.snapshot.key.agentId]);
+    this.setDesiredSubscription(
+      state.runtime,
+      [state.snapshot.key.agentId],
+      source,
+    );
     return this.fetchTail(state, state.generation, source);
   }
 
@@ -477,18 +493,36 @@ export class TimelineCoordinator {
     generation: number,
     source: TimelineSourceToken,
   ): Promise<void> {
-    if (state.catchup) return state.catchup;
     if (state.tail) return state.tail;
     if (!state.snapshot.range) return this.fetchTail(state, generation, source);
     const authorityGeneration = state.authorityGeneration;
+    const cursor = {
+      epoch: state.snapshot.range.epoch,
+      seq: state.snapshot.range.endSeq,
+    };
+    if (
+      state.catchup?.generation === generation &&
+      state.catchup.authorityGeneration === authorityGeneration &&
+      sameToken(state.catchup.source, source) &&
+      sameCursor(state.catchup.cursor, cursor)
+    )
+      return state.catchup.promise;
     state.snapshot = { ...state.snapshot, catchingUp: true };
     this.publish();
+    const job: CatchupJob = {
+      promise: Promise.resolve(),
+      generation,
+      authorityGeneration,
+      source,
+      cursor,
+    };
     const request = (async () => {
       try {
         for (;;) {
           const range = state.snapshot.range;
           if (!range)
             return void (await this.fetchTail(state, generation, source));
+          job.cursor = { epoch: range.epoch, seq: range.endSeq };
           const page = await state.runtime!.getTimeline(
             state.snapshot.key.agentId,
             {
@@ -561,9 +595,10 @@ export class TimelineCoordinator {
         }
       }
     })();
-    state.catchup = request;
+    job.promise = request;
+    state.catchup = job;
     void request.finally(() => {
-      if (state.catchup === request) state.catchup = null;
+      if (state.catchup === job) state.catchup = null;
     });
     return request;
   }
@@ -590,25 +625,40 @@ export class TimelineCoordinator {
   private setDesiredSubscription(
     runtime: TimelineRuntime,
     agentIds: readonly string[],
+    sourceToken: TimelineSourceToken | null,
   ): void {
-    this.desiredSubscriptions.set(runtime, agentIds);
+    this.desiredSubscriptions.set(runtime, { agentIds, sourceToken });
     if (this.subscriptionJobs.has(runtime)) return;
     const job = (async () => {
       let failures = 0;
       for (;;) {
-        const desired = this.desiredSubscriptions.get(runtime) ?? [];
+        const desired = this.desiredSubscriptions.get(runtime) ?? {
+          agentIds: [],
+          sourceToken: null,
+        };
         const applied = this.appliedSubscriptions.get(runtime);
-        if (sameStrings(desired, applied)) return;
+        if (sameDemand(desired, applied)) return;
         try {
-          await runtime.setTimelineSubscription([...desired]);
+          await runtime.setTimelineSubscription([...desired.agentIds]);
         } catch {
+          if (!sameDemand(desired, this.desiredSubscriptions.get(runtime))) {
+            failures = 0;
+            continue;
+          }
           const active = this.current ? this.replica(this.current) : null;
-          if (active?.runtime === runtime) {
+          if (
+            active?.runtime === runtime &&
+            sameToken(active.snapshot.sourceToken, desired.sourceToken)
+          ) {
             active.subscriptionError = true;
             this.fail(active, "sync_error");
           }
           if (++failures === 3) return;
           await Promise.resolve();
+          continue;
+        }
+        if (!sameDemand(desired, this.desiredSubscriptions.get(runtime))) {
+          failures = 0;
           continue;
         }
         this.appliedSubscriptions.set(runtime, desired);
@@ -658,7 +708,10 @@ export class TimelineCoordinator {
   private release(state: Replica): void {
     state.unsubscribe();
     state.unsubscribe = () => {};
-    if (state.runtime) this.setDesiredSubscription(state.runtime, []);
+    if (state.runtime) {
+      this.appliedSubscriptions.delete(state.runtime);
+      this.setDesiredSubscription(state.runtime, [], null);
+    }
     state.runtime = null;
     state.buffer = null;
     state.snapshot = {
@@ -685,11 +738,16 @@ export class TimelineCoordinator {
   }
 
   private subscriptionReady(state: Replica): boolean {
+    const source = state.snapshot.sourceToken;
+    const expected = {
+      agentIds: [state.snapshot.key.agentId],
+      sourceToken: source,
+    };
     return (
       state.runtime !== null &&
-      this.appliedSubscriptions
-        .get(state.runtime)
-        ?.includes(state.snapshot.key.agentId) === true
+      source !== null &&
+      sameDemand(this.desiredSubscriptions.get(state.runtime), expected) &&
+      sameDemand(this.appliedSubscriptions.get(state.runtime), expected)
     );
   }
 
@@ -862,12 +920,31 @@ function requiresReplacement(page: PaseoTimeline, epoch: string): boolean {
 
 function sameToken(
   a: TimelineSourceToken | null,
-  b: TimelineSourceToken,
+  b: TimelineSourceToken | null,
 ): boolean {
   return (
-    a?.serverId === b.serverId &&
-    a.slotGeneration === b.slotGeneration &&
-    a.connectionEpoch === b.connectionEpoch
+    a?.serverId === b?.serverId &&
+    a?.slotGeneration === b?.slotGeneration &&
+    a?.connectionEpoch === b?.connectionEpoch
+  );
+}
+
+function sameCursor(
+  a: { epoch: string; seq: number },
+  b: { epoch: string; seq: number },
+): boolean {
+  return a.epoch === b.epoch && a.seq === b.seq;
+}
+
+function sameDemand(
+  a: SubscriptionDemand | undefined,
+  b: SubscriptionDemand | undefined,
+): boolean {
+  return (
+    !!a &&
+    !!b &&
+    sameToken(a.sourceToken, b.sourceToken) &&
+    sameStrings(a.agentIds, b.agentIds)
   );
 }
 
