@@ -4,6 +4,17 @@ import type { AgentPagerController, AgentPagerState } from "./pager";
 import type { AgentRuntimeMetadata } from "./header";
 import type { AgentHeaderMetadataController } from "./headerMetadata";
 import { projectAgentHeader } from "./header";
+import {
+  DestinationHost,
+  PlaceholderDestinationBody,
+  type DestinationBodyFactories,
+} from "../app/destinationHost";
+import type { TimelineCoordinator } from "../timeline/coordinator";
+import {
+  TimelineDestinationBody,
+  type TimelineDiagnostics,
+} from "../timeline/view";
+import { diagnosticHash } from "../app/hash";
 
 export type HeaderMetadataSource = Pick<
   AgentHeaderMetadataController,
@@ -39,6 +50,8 @@ declare global {
       }> | null;
       renderRevision: number;
       stableDom: boolean;
+      rendererLossCount: number;
+      timeline: TimelineDiagnostics | null;
     }>;
   }
 }
@@ -52,8 +65,8 @@ export class AgentShellView {
   private readonly first = document.createElement("div");
   private readonly second = document.createElement("div");
   private readonly body = document.createElement("main");
-  private readonly heading = document.createElement("h1");
-  private readonly placeholder = document.createElement("p");
+  private readonly destinationHost: DestinationHost;
+  private timelineBody: TimelineDestinationBody | null = null;
   private renderRevision = 0;
   private stableDom = true;
 
@@ -62,6 +75,8 @@ export class AgentShellView {
     pager: AgentPagerController,
     directory: DirectoryViewSource,
     metadata: HeaderMetadataSource,
+    private readonly timeline: TimelineCoordinator,
+    factories: Partial<DestinationBodyFactories> = {},
   ) {
     this.pagerState = pager.snapshot();
     this.directoryState = directory.snapshot();
@@ -71,7 +86,17 @@ export class AgentShellView {
     this.second.id = "agent-header-line-2";
     this.headerElement.append(this.first, this.second);
     this.body.id = "agent-body";
-    this.body.append(this.heading, this.placeholder);
+    const viewports = new Map();
+    this.destinationHost = new DestinationHost(this.body, {
+      timeline:
+        factories.timeline ??
+        (() => {
+          this.timelineBody = new TimelineDestinationBody(timeline, viewports);
+          return this.timelineBody;
+        }),
+      draft: factories.draft ?? (() => new PlaceholderDestinationBody()),
+      config: factories.config ?? (() => new PlaceholderDestinationBody()),
+    });
     root.replaceChildren(this.headerElement, this.body);
     this.unsubscribers = [
       pager.subscribe((state) => {
@@ -86,11 +111,13 @@ export class AgentShellView {
         this.metadataState = state;
         this.render();
       }),
+      timeline.subscribe(() => this.render()),
     ];
   }
 
   dispose(): void {
     this.unsubscribers.forEach((unsubscribe) => unsubscribe());
+    this.destinationHost.dispose();
   }
 
   render(): void {
@@ -105,12 +132,6 @@ export class AgentShellView {
         : null;
     const line1 = header?.line1 ?? "Glasseo · Config";
     const line2 = header?.line2 ?? directoryStatus(this.directoryState);
-    const title =
-      destination.kind === "config"
-        ? "Config"
-        : destination.pane === "draft"
-          ? "Draft"
-          : "Timeline";
     this.headerElement.dataset.status = header?.status ?? "ready";
     this.headerElement.setAttribute(
       "aria-label",
@@ -120,9 +141,15 @@ export class AgentShellView {
     this.first.title = line1;
     this.second.textContent = line2;
     this.second.title = line2;
-    this.body.dataset.destination = title.toLowerCase();
-    this.heading.textContent = title;
-    this.placeholder.textContent = `${title} content arrives in a later milestone.`;
+    this.body.dataset.destination =
+      destination.kind === "config" ? "config" : destination.pane;
+    this.destinationHost.update({
+      destination,
+      timeline:
+        destination.kind === "agent"
+          ? this.timeline.snapshotFor(destination.key)
+          : null,
+    });
 
     const current = this.directoryState.current;
     const returnTo =
@@ -134,24 +161,26 @@ export class AgentShellView {
       destination: destination.kind === "config" ? "config" : destination.pane,
       agentCount: this.directoryState.orderedAgents.length,
       currentKeyHash: current
-        ? shortHash(`${current.serverId}\0${current.agentId}`)
+        ? diagnosticHash(`${current.serverId}\0${current.agentId}`)
         : null,
       returnKeyHash: returnTo
-        ? shortHash(`${returnTo.serverId}\0${returnTo.agentId}`)
+        ? diagnosticHash(`${returnTo.serverId}\0${returnTo.agentId}`)
         : null,
       headerLine1: line1,
       headerLine2: line2,
       lastCommand: this.pagerState.lastCommand,
       directory: directoryStatus(this.directoryState),
       directorySources: [...this.directoryState.hosts.values()].map((host) => ({
-        serverIdHash: shortHash(host.serverId),
+        serverIdHash: diagnosticHash(host.serverId),
         revision: host.revision,
         status: host.status,
         stale: host.stale,
       })),
       metadataSource: this.metadataState
         ? {
-            serverIdHash: shortHash(this.metadataState.sourceToken.serverId),
+            serverIdHash: diagnosticHash(
+              this.metadataState.sourceToken.serverId,
+            ),
             slotGeneration: this.metadataState.sourceToken.slotGeneration,
             connectionEpoch: this.metadataState.sourceToken.connectionEpoch,
             revision: this.metadataState.revision,
@@ -159,7 +188,16 @@ export class AgentShellView {
         : null,
       renderRevision: ++this.renderRevision,
       stableDom: this.stableDom,
+      rendererLossCount: this.destinationHost.rendererLossCount,
+      timeline:
+        destination.kind === "agent" && destination.pane === "timeline"
+          ? (this.timelineBody?.diagnostics() ?? null)
+          : null,
     };
+  }
+
+  handleInput(input: import("../native/semanticInput").SemanticInput): boolean {
+    return this.destinationHost.handleInput(input);
   }
 }
 
@@ -170,13 +208,4 @@ function directoryStatus(directory: GlobalAgentDirectorySnapshot): string {
   if ([...directory.hosts.values()].some((host) => host.stale))
     return "Directory stale";
   return "Directory ready";
-}
-
-function shortHash(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index++) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
 }
