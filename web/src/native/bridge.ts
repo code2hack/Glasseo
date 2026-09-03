@@ -21,6 +21,7 @@ export type NativeMessage =
   | { type: "hello" }
   | { type: "scanner-start" }
   | { type: "scanner-cancel" }
+  | { type: "host-media-cleanup"; requestId: number; serverId: string }
   | { type: "qualification-start"; mode: "BUILT_IN" | "HID" }
   | {
       type: "qualification-rendered";
@@ -68,6 +69,15 @@ export function decodeNativeMessage(value: string): NativeMessage {
   if (
     (message.type === "scanner-start" || message.type === "scanner-cancel") &&
     Object.keys(message).length === 1
+  )
+    return message as NativeMessage;
+  if (
+    message.type === "host-media-cleanup" &&
+    Object.keys(message).length === 3 &&
+    Number.isSafeInteger(message.requestId) &&
+    (message.requestId as number) > 0 &&
+    typeof message.serverId === "string" &&
+    message.serverId.length > 0
   )
     return message as NativeMessage;
   if (

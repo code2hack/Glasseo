@@ -5,6 +5,7 @@ import {
   isPassingProbeResult,
   requiredProbeChecks,
 } from "../src/native/bridge";
+import { decodeHostMediaCleanupResult } from "../src/native/hostMedia";
 
 test("bridge accepts its narrow message types", () => {
   assert.deepEqual(decodeNativeMessage('{"type":"hello"}'), { type: "hello" });
@@ -14,6 +15,12 @@ test("bridge accepts its narrow message types", () => {
   assert.deepEqual(decodeNativeMessage('{"type":"scanner-cancel"}'), {
     type: "scanner-cancel",
   });
+  assert.equal(
+    decodeNativeMessage(
+      '{"type":"host-media-cleanup","requestId":1,"serverId":"host-a"}',
+    ).type,
+    "host-media-cleanup",
+  );
   assert.equal(
     decodeNativeMessage(JSON.stringify(probeResult())).type,
     "probe-result",
@@ -54,6 +61,25 @@ test("bridge accepts its narrow message types", () => {
       stepIndex: 3,
       phase: "AWAITING_INPUT",
     },
+  );
+});
+
+test("host media cleanup result is exact, correlated, and content-free", () => {
+  assert.deepEqual(
+    decodeHostMediaCleanupResult({
+      type: "host-media-cleanup-result",
+      requestId: 7,
+      deleted: 0,
+    }),
+    { type: "host-media-cleanup-result", requestId: 7, deleted: 0 },
+  );
+  assert.throws(() =>
+    decodeHostMediaCleanupResult({
+      type: "host-media-cleanup-result",
+      requestId: 7,
+      deleted: 0,
+      serverId: "leak",
+    }),
   );
 });
 

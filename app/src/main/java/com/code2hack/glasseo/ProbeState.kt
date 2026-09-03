@@ -39,6 +39,7 @@ object ProbeState {
         when (message) {
             BridgeMessage.Hello -> helloCount++
             BridgeMessage.ScannerStart, BridgeMessage.ScannerCancel -> Unit
+            is BridgeMessage.HostMediaCleanup -> Unit
             is BridgeMessage.ProbeResult -> {
                 result = message
                 latch.countDown()

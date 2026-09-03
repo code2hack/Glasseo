@@ -37,6 +37,7 @@ import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import androidx.webkit.WebMessageCompat
+import org.json.JSONObject
 
 class MainActivity : Activity(), InputManager.InputDeviceListener {
     private lateinit var root: FrameLayout
@@ -361,6 +362,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                         }
                         BridgeMessage.ScannerStart -> qrScannerController.start()
                         BridgeMessage.ScannerCancel -> qrScannerController.cancel()
+                        is BridgeMessage.HostMediaCleanup -> postNative(
+                            JSONObject()
+                                .put("type", "host-media-cleanup-result")
+                                .put("requestId", it.requestId)
+                                .put("deleted", 0)
+                                .toString(),
+                        )
                         is BridgeMessage.QualificationStart -> if (captureInput) startQualification(it.mode)
                         is BridgeMessage.QualificationRendered -> acknowledgeQualificationRender(it)
                         is BridgeMessage.HidQualificationRendered -> acknowledgeHidQualificationRender(it)

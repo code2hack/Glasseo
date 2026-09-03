@@ -132,6 +132,14 @@ export class DirectoryCoordinator {
     return true;
   }
 
+  async cleanupHost(serverId: string): Promise<void> {
+    if (this.leases.has(serverId))
+      throw new Error("Cannot clean an active host");
+    await this.queueWrite(serverId, () => this.storage.deleteHost(serverId));
+    if (this.snapshot().hosts.has(serverId))
+      throw new Error("Host directory is still reachable");
+  }
+
   dispose(): void {
     this.unsubscribeLeases?.();
     this.unsubscribeLeases = null;
@@ -410,7 +418,10 @@ export class DirectoryCoordinator {
     this.queueWrite("$selection", () => this.storage.putLastViewedAgent(key));
   }
 
-  private queueWrite(key: string, operation: () => Promise<void>): void {
+  private queueWrite(
+    key: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
     const previous = this.writes.get(key) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(operation);
     this.writes.set(key, next);
@@ -425,6 +436,7 @@ export class DirectoryCoordinator {
       .finally(() => {
         if (this.writes.get(key) === next) this.writes.delete(key);
       });
+    return next;
   }
 
   private async removeOrphanCaches(): Promise<void> {

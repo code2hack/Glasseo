@@ -15,7 +15,9 @@ type PairingErrorCode =
   | "busy";
 
 export type PairingState =
-  | { status: "idle" | "scanning" | "validating" | "connecting" | "paired" }
+  | { status: "idle" | "scanning" | "validating" | "connecting" }
+  | { status: "paired"; serverId: string }
+  | { status: "cancelled" }
   | { status: "error"; code: PairingErrorCode };
 
 type ScannerPort = {
@@ -33,6 +35,8 @@ const scannerPort: ScannerPort = {
 export class PairingController {
   private state: PairingState = { status: "idle" };
   private scannerActive = false;
+  private operation = 0;
+  private abort: AbortController | null = null;
   private readonly listeners = new Set<(state: PairingState) => void>();
   private readonly stopListening: () => void;
 
@@ -55,30 +59,43 @@ export class PairingController {
     return () => this.listeners.delete(listener);
   }
 
+  snapshot(): PairingState {
+    return this.state;
+  }
+
   start(): void {
-    if (this.scannerActive) return;
+    if (this.scannerActive || this.abort) return;
+    this.operation++;
     this.scannerActive = true;
     this.set({ status: "scanning" });
     this.scanner.start();
   }
 
   cancel(): void {
+    if (!this.scannerActive && !this.abort) return;
+    this.operation++;
     if (this.scannerActive) this.scanner.cancel();
+    this.scannerActive = false;
+    this.abort?.abort();
+    this.abort = null;
+    this.set({ status: "cancelled" });
   }
 
   close(): void {
+    this.cancel();
     this.stopListening();
   }
 
   private async onScanner(message: QrScannerMessage): Promise<void> {
     if (!this.scannerActive) return;
+    const operation = this.operation;
     if (message.type === "scanner-state") {
       this.set({ status: "scanning" });
       return;
     }
     if (message.type === "scanner-cancelled") {
       this.scannerActive = false;
-      this.set({ status: "idle" });
+      if (operation === this.operation) this.set({ status: "cancelled" });
       return;
     }
     if (message.type === "scanner-error") {
@@ -87,17 +104,25 @@ export class PairingController {
       return;
     }
     this.scannerActive = false;
+    this.abort = new AbortController();
     this.set({ status: "validating" });
     try {
       const candidate = parsePairingOffer(message.value);
       this.set({ status: "connecting" });
-      await this.registry.addCandidate(candidate);
-      this.set({ status: "paired" });
+      const profile = await this.registry.addCandidate(
+        candidate,
+        this.abort.signal,
+      );
+      if (operation === this.operation)
+        this.set({ status: "paired", serverId: profile.serverId });
     } catch (error) {
+      if (operation !== this.operation) return;
       this.set({
         status: "error",
         code: error instanceof HostError ? error.code : "connection_failure",
       });
+    } finally {
+      if (operation === this.operation) this.abort = null;
     }
   }
 

@@ -127,8 +127,12 @@ export class HostRegistry {
     return this.addCandidate(parsePairingOffer(scannedValue));
   }
 
-  async addCandidate(candidate: PairingCandidate): Promise<StoredHostProfile> {
+  async addCandidate(
+    candidate: PairingCandidate,
+    signal?: AbortSignal,
+  ): Promise<StoredHostProfile> {
     await this.ensureLoaded();
+    throwIfAborted(signal);
     if (this.loadFailed)
       throw new HostError("storage_error", "Saved hosts could not be loaded");
     this.rejectDuplicate(candidate);
@@ -137,12 +141,16 @@ export class HostRegistry {
     try {
       runtime = this.createRuntime(candidate);
       const host = await runtime.connect();
+      throwIfAborted(signal);
       const profile = profileFromAcceptedHost(candidate, host, this.clock());
       try {
-        await this.storage.putProfile(profile);
-      } catch {
+        await this.storage.putProfile(profile, signal);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError")
+          throw error;
         throw new HostError("storage_error", "Could not save host profile");
       }
+      throwIfAborted(signal);
       this.install(profile, "online", runtime);
       this.publish();
       return profile;
@@ -228,7 +236,10 @@ export class HostRegistry {
     };
     slot.unsubscribe = runtime.subscribeConnection((state) => {
       if (this.slots.get(profile.serverId)?.generation !== generation) return;
-      const nextStatus = hostStatus(state);
+      const nextStatus =
+        state.status === "connecting" && state.attempt > 1
+          ? "reconnecting"
+          : hostStatus(state);
       if (nextStatus === "online" && slot.status !== "online")
         slot.connectionEpoch++;
       slot.status = nextStatus;
@@ -320,6 +331,7 @@ function candidateFromProfile(profile: StoredHostProfile): PairingCandidate {
 }
 
 function mapRuntimeError(error: unknown): HostError {
+  if (error instanceof DOMException && error.name === "AbortError") throw error;
   if (error instanceof HostError) return error;
   if (error instanceof PaseoRuntimeError) {
     if (error.code === "wrong_daemon")
@@ -331,4 +343,12 @@ function mapRuntimeError(error: unknown): HostError {
       return new HostError("unsupported_daemon", error.message);
   }
   return new HostError("connection_failure", "Could not connect to Paseo host");
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function abortError(): DOMException {
+  return new DOMException("Pairing cancelled", "AbortError");
 }

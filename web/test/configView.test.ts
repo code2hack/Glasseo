@@ -15,8 +15,13 @@ test("Config view keeps keyed rows, routes only owned input, and redacts diagnos
     () => false,
   );
   const root = new FakeElement("main") as unknown as HTMLElement;
-  const view = new ConfigDestinationBody(controller);
+  let shellInvalidations = 0;
+  const view = new ConfigDestinationBody(
+    controller,
+    () => shellInvalidations++,
+  );
   view.mount(root);
+  assert.equal(shellInvalidations, 0);
   view.update({
     destination: { kind: "config", returnTo: null },
     timeline: null,
@@ -27,6 +32,7 @@ test("Config view keeps keyed rows, routes only owned input, and redacts diagnos
   const hosts = list.children[2];
 
   assert.equal(view.handleInput(input("PRIMARY", 1)), true);
+  assert.equal(shellInvalidations, 1);
   assert.equal(list.children.length, 3);
   assert.equal(list.children[1], hosts);
   assert.equal(view.handleInput(input("DOWN", 2)), true);

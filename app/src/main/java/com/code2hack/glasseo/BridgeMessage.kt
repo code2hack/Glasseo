@@ -7,6 +7,8 @@ sealed interface BridgeMessage {
     data object ScannerStart : BridgeMessage
     data object ScannerCancel : BridgeMessage
 
+    data class HostMediaCleanup(val requestId: Long, val serverId: String) : BridgeMessage
+
     data class SemanticReceived(
         val control: SemanticControl,
         val action: SemanticAction,
@@ -66,6 +68,13 @@ sealed interface BridgeMessage {
                 "scanner-cancel" -> {
                     require(json.length() == 1) { "Malformed scanner cancel" }
                     ScannerCancel
+                }
+                "host-media-cleanup" -> {
+                    require(json.length() == 3) { "Malformed host media cleanup" }
+                    HostMediaCleanup(
+                        json.getLong("requestId").also { require(it > 0) },
+                        json.getString("serverId").also { require(it.isNotEmpty()) },
+                    )
                 }
                 "probe-result" -> parseProbe(json)
                 "qualification-start" -> {

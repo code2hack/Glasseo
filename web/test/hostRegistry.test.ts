@@ -257,6 +257,31 @@ test("pending pair and delayed restore cannot create duplicate runtimes", async 
   assert.equal(restoredFactory.runtimes.length, 1);
 });
 
+test("cancellation aborts profile persistence before a host can become durable", async () => {
+  const storage = new MemoryStorage();
+  const write = deferred<void>();
+  const started = deferred<void>();
+  storage.putBarrier = write.promise;
+  storage.putStarted = started.resolve;
+  const registry = new HostRegistry(storage, new FakeFactory().create);
+  await registry.restore();
+  const abort = new AbortController();
+  const adding = registry.addCandidate(
+    parsePairingOffer(offer("cancelled", "relay.paseo.sh:443")),
+    abort.signal,
+  );
+  await started.promise;
+  abort.abort();
+  write.resolve();
+
+  await assert.rejects(adding, (error) => {
+    assert.equal((error as DOMException).name, "AbortError");
+    return true;
+  });
+  assert.equal(storage.profiles.size, 0);
+  assert.equal(registry.snapshot().hosts.length, 0);
+});
+
 test("hosts restore concurrently and expose independent connection states", async () => {
   const storage = new MemoryStorage([profile("alpha"), profile("beta")]);
   const factory = new FakeFactory();
@@ -431,6 +456,8 @@ class MemoryStorage implements HostStorage {
   failLoad = false;
   failDelete = false;
   loadBarrier: Promise<void> | null = null;
+  putBarrier: Promise<void> | null = null;
+  putStarted: (() => void) | null = null;
 
   constructor(profiles: unknown[] = []) {
     for (const value of profiles) {
@@ -446,8 +473,12 @@ class MemoryStorage implements HostStorage {
     await this.loadBarrier;
     return [...this.profiles.values()].map((value) => structuredClone(value));
   }
-  async putProfile(value: StoredHostProfile) {
+  async putProfile(value: StoredHostProfile, signal?: AbortSignal) {
     if (this.failPut) throw new Error("put failed");
+    this.putStarted?.();
+    await this.putBarrier;
+    if (signal?.aborted)
+      throw new DOMException("Pairing cancelled", "AbortError");
     this.profiles.set(value.serverId, structuredClone(value));
   }
   async deleteProfile(serverId: string) {

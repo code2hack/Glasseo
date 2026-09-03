@@ -5,7 +5,12 @@ import type {
   GlobalAgentDirectorySnapshot,
   HostDirectorySnapshot,
 } from "../directory/types";
-import type { ConfigProjection, ConfigRow, ConfigRowId } from "./types";
+import type {
+  ConfigProjection,
+  ConfigRow,
+  ConfigRowId,
+  ConfigSectionRows,
+} from "./types";
 
 export const WORKSPACES_SECTION_ID = rowId("section", "workspaces");
 export const HOSTS_SECTION_ID = rowId("section", "hosts");
@@ -18,6 +23,7 @@ export function rowId(...parts: string[]): ConfigRowId {
 export function projectConfig(
   directory: GlobalAgentDirectorySnapshot,
   expandedRowIds: ReadonlySet<ConfigRowId>,
+  sectionRows: ConfigSectionRows = new Map(),
 ): ConfigProjection {
   const all: ConfigRow[] = [];
   const section = (id: ConfigRowId, label: string, child: () => void) => {
@@ -44,30 +50,16 @@ export function projectConfig(
       appendHost(all, host, directory, expandedRowIds);
   });
   section(HOSTS_SECTION_ID, "Hosts", () =>
-    add(
-      all,
-      rowId("placeholder", "hosts"),
-      HOSTS_SECTION_ID,
-      "placeholder",
-      1,
-      "Host controls arrive in #11",
-      null,
-      false,
-      expandedRowIds,
-    ),
+    appendSection(all, sectionRows, HOSTS_SECTION_ID, expandedRowIds, {
+      id: rowId("placeholder", "hosts"),
+      label: "Host controls arrive in #11",
+    }),
   );
   section(HID_KEYS_SECTION_ID, "HID Keys", () =>
-    add(
-      all,
-      rowId("placeholder", "hid-keys"),
-      HID_KEYS_SECTION_ID,
-      "placeholder",
-      1,
-      "HID controls arrive in #12",
-      null,
-      false,
-      expandedRowIds,
-    ),
+    appendSection(all, sectionRows, HID_KEYS_SECTION_ID, expandedRowIds, {
+      id: rowId("placeholder", "hid-keys"),
+      label: "HID controls arrive in #12",
+    }),
   );
 
   const byId = new Map(all.map((row) => [row.id, row]));
@@ -269,6 +261,7 @@ function add(
   foldable: boolean,
   expandedIds: ReadonlySet<ConfigRowId>,
   agentKey: ConfigRow["agentKey"] = null,
+  action: ConfigRow["action"] = null,
 ): void {
   rows.push({
     id,
@@ -280,7 +273,33 @@ function add(
     foldable,
     expanded: foldable && expandedIds.has(id),
     agentKey,
+    action,
   });
+}
+
+function appendSection(
+  rows: ConfigRow[],
+  sections: ConfigSectionRows,
+  sectionId: ConfigRowId,
+  expanded: ReadonlySet<ConfigRowId>,
+  fallback: { id: ConfigRowId; label: string },
+): void {
+  const supplied = sections.get(sectionId);
+  if (supplied) {
+    rows.push(...supplied);
+    return;
+  }
+  add(
+    rows,
+    fallback.id,
+    sectionId,
+    "placeholder",
+    1,
+    fallback.label,
+    null,
+    false,
+    expanded,
+  );
 }
 
 function visibleFrom(
