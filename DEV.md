@@ -20,13 +20,13 @@ probe.
 | Development host | `u4090` | Ubuntu 22.04, Linux x86_64 |
 | Manager tmux | `Glasseo:0.0` | active and owner-approved |
 | Worker placement | separate `Glasseo` tmux windows and isolated worktrees on `u4090` | owner-approved |
-| Worker profile | current default Codex profile | owner-approved |
+| Worker profile | `ds4` | owner-approved |
 | Maximum concurrent Workers | 4 | owner-approved; spawning remains sequential |
 | Target device | Rokid `RG-glasses`, serial `1906092617103125` | authorized USB ADB device |
-| Device use | install, run, logs, and hardware verification | owner-approved |
+| Device use | unattended install, run, automated input/test setup, debugging, recovery, and hardware verification through ADB or an automated on-device harness | owner-approved; Owner is not a physical device operator |
 
 Only `u4090` is currently approved. Adding another host, device, profile, tmux layout, or
-higher concurrency is a Project Owner gate.
+higher concurrency is a remote Project Owner governance gate.
 
 ## 3. Architecture boundary
 
@@ -193,10 +193,49 @@ Command ownership:
 
 `.github/workflows/ci.yml` runs npm install/build/typecheck/test/lint/format, Gradle unit
 tests/lint, and debug/release assembly from a clean checkout and uploads APK artifacts.
-Real-device checks remain Manager-run because GitHub-hosted CI has no Rokid device. The
-issue #2 host gates passed locally and in current-head CI before CTO acceptance.
+Real-device checks remain Manager-run on `u4090` because GitHub-hosted CI has no Rokid
+device. Every such gate must be non-interactive from the Project Owner's perspective and
+must run through ADB or an automated on-device test harness. The issue #2 host gates
+passed locally and in current-head CI before CTO acceptance.
 
 ## 7. Rokid device and ADB procedures
+
+### 7.0 Unattended RG contract
+
+The target RG is an unattended test device. The Project Owner's standing environment
+arrangement is to keep it connected to `u4090`; the Owner cannot be used as part of any
+device-operation, debugging, or acceptance procedure.
+
+All device interaction must be performed through the explicit target ADB connection or an
+automated on-device test harness. This includes permissions, settings, UI positioning,
+input, application lifecycle, process recovery, test fixtures, fault injection, evidence
+capture, and cleanup.
+
+Workers and the Manager must never ask the Project Owner to:
+
+- touch or wear the glasses;
+- unlock or operate the glasses UI;
+- move or reconnect the USB cable;
+- pair or reconnect a Bluetooth peripheral;
+- press a Rokid or peripheral control;
+- place a peripheral into pairing mode;
+- present or scan a QR code manually;
+- move the glasses or provide head motion;
+- create a visual or acoustic test stimulus manually; or
+- otherwise physically manipulate the RG or a peripheral.
+
+Before each exact-RG gate, automation must perform a fail-closed preflight that proves at
+least the expected serial, authorized ADB state, product identity, relevant package/build,
+foreground/test state, and any ticket-specific prerequisite.
+
+If the device or a required peripheral is unavailable, automation may perform only bounded
+safe recovery. If the required state cannot be restored without physical intervention,
+record that as an automation limitation, preserve the safe state, and report it to the
+Manager. Do not request Owner physical recovery and do not substitute an unverified PASS.
+
+Historical accepted physical-device evidence remains valid evidence for the commits and
+behaviors it actually qualified. This rule governs new work, reruns, corrections, and
+future acceptance claims.
 
 Set the target explicitly in every device command:
 
@@ -292,27 +331,48 @@ browser-safe compiled distribution exercised by the device probe.
 
 ### 7.2 Camera, microphone, HID, QR, network, and Relay
 
-- Device operations are automation-first. Use ADB for install/uninstall, launch/stop,
-  permission grants/revocations, app-ops, input injection, settings/UI automation, state
-  inspection, and evidence capture whenever the target firmware exposes a reliable path.
-  An Android permission dialog is not a human gate when the same permission can be applied
-  and verified through ADB. For the baseline package, declared runtime permissions may be
-  managed with commands such as
-  `adb shell pm grant com.code2hack.glasseo android.permission.CAMERA` and
-  `adb shell pm grant com.code2hack.glasseo android.permission.RECORD_AUDIO`; always verify
-  the resulting package/app-op state rather than inferring success from command exit alone.
-- Camera2 preview/capture and QR scanning require real-device verification under the
-  actual 480x640 HUD lifecycle.
-- Microphone verification must cover start, streaming, cancellation, app backgrounding,
-  and permission denial without retaining provisional audio/transcript state.
-- Built-in Rokid keys and Bluetooth HID bindings must work together. Automate Bluetooth
-  settings navigation, pairing confirmation, key identification, and reset verification
-  through ADB when reliable. Escalate only a genuinely physical step that ADB cannot
-  perform, such as placing a peripheral into pairing mode or reconnecting an unavailable
-  cable.
-- Generate a standard offer on a Paseo 0.7.0 daemon with
-  `paseo daemon pair --relay` (or `--json` for structured automation), scan it through
-  Glasseo, and verify the offer's TLS/relay/public-key fields and E2EE connection.
+- Device operations are automation-only. Use ADB or an automated on-device harness for
+  install/uninstall, launch/stop, runtime permissions, app-ops, settings, UI automation,
+  input injection, lifecycle control, state inspection, fault injection, debugging,
+  evidence capture, and cleanup.
+- Android permission dialogs are never Owner gates. Apply permissions with ADB/app-ops
+  where supported and verify the resulting package/app-op state. For example:
+
+  ```bash
+  adb -s "$GLASSEO_DEVICE_SERIAL" shell pm grant \
+    com.code2hack.glasseo android.permission.CAMERA
+  adb -s "$GLASSEO_DEVICE_SERIAL" shell pm grant \
+    com.code2hack.glasseo android.permission.RECORD_AUDIO
+  ```
+
+- Camera2 preview/capture and QR behavior still require exact-RG verification, but the
+  procedure must require no Owner interaction. Use deterministic on-device/instrumentation
+  fixtures where they exercise the production boundary faithfully. If a true optical
+  camera claim cannot be exercised without manually changing the external scene, record
+  that claim as an automation limitation rather than asking the Owner to present a scene
+  or QR code.
+- Microphone verification must cover start, streaming, cancellation, backgrounding,
+  permission denial, and provisional-state cleanup. Test protocol/state behavior with a
+  deterministic audio fixture and exercise the real `AudioRecord` boundary on the exact
+  RG through an automated on-device procedure where feasible. If a required acoustic
+  stimulus cannot be produced by the automated harness, report the exact remaining
+  limitation rather than requesting Owner speech or environmental audio.
+- Built-in Rokid input and Bluetooth HID remain product hardware inputs, but new ticket
+  acceptance must not depend on Owner key presses or pairing actions. Reuse already
+  accepted real-hardware qualification where its scope is sufficient. For later Config,
+  persistence, reducer, lifecycle, and regression behavior, use instrumentation or another
+  automated seam that enters the same production normalization/state path. If a genuinely
+  new real-peripheral property cannot be actuated or observed automatically, report it as
+  an unautomatable acceptance limitation; do not ask the Owner to pair, reconnect, enter
+  pairing mode, or press the peripheral.
+- Generate standard Paseo offers non-interactively with
+  `paseo daemon pair --relay --json` where structured automation is useful. Parsing,
+  identity, Relay, TLS, public-key, and E2EE behavior must be automated. If validating the
+  production optical QR scanner cannot be driven through the approved automated harness,
+  keep that optical claim separate from fully automated offer/protocol claims and report
+  it as a limitation.
+- Drive network and daemon failure scenarios through host commands and ADB rather than
+  physical toggles.
 - Relay credentials, pairing offers, daemon private keys, QR payloads, and traffic content
   must never be committed or pasted into logs/issues. Record redacted connection results.
 - Do not expose a Paseo daemon directly to the public network for Glasseo testing.
@@ -369,7 +429,9 @@ raise an ALARM; never fall back to another conversation or browser profile.
 - Each Worker uses one separately named `Glasseo` tmux window, `worker-<number>`, and is
   named `Glasseo-#<number>-worker@u4090`.
 - Every Worker prompt includes Manager coordinates `Glasseo:0.0`, exact issue/plan URLs,
-  branch/worktree, acceptance criteria, commands from this file, and human-gate procedure.
+  branch/worktree, acceptance criteria, commands from this file, unattended-device
+  automation procedure, remote-governance-gate procedure, and the rule for reporting
+  unautomatable acceptance without requesting physical Owner action.
 - The Manager creates Workers sequentially and never exceeds four active Workers.
 - Workers commit and push but do not merge. The Manager verifies the remote branch, opens
   the PR, obtains CTO review, and merges only after `PASS` and required checks.
@@ -381,33 +443,43 @@ worktree path and branch first; remove only that worktree and only its tmux wind
 close the `Glasseo` or persistent `sudo` tmux session, other windows, or unrelated panes.
 Never use broad `git clean`, hard reset, or recursive deletion for lifecycle cleanup.
 
-## 10. ALARM and human-gate procedure
+## 10. Remote governance-gate and ALARM procedure
 
-The owner-approved alarm is the local MP3
-`/home/code2hack/Music/super-mario-alarm.mp3` through the HDMI sink
-`alsa_output.pci-0000_08_00.1.hdmi-stereo`.
+The Project Owner is remotely available for governance decisions but is not present at the
+RG or `u4090` as a device operator.
 
-Use direct HDMI decoding/routing:
+The default Glasseo ALARM/attention path is a direct remote Manager-to-Project-Owner
+message. The previously documented local HDMI/MP3 alarm is not part of the Glasseo
+workflow.
 
-```bash
-ffmpeg -v error -i /home/code2hack/Music/super-mario-alarm.mp3 -f wav - \
-  | paplay --device=alsa_output.pci-0000_08_00.1.hdmi-stereo
-```
+No local audio ALARM may be played for:
 
-`ffplay` alone is not the canonical command because PipeWire stream-restore moved its
-stream to the analog default sink during validation. HDMI routing was verified after an
-explicit move; the command above avoids that ambiguity by selecting the sink in `paplay`.
+- RG connection or ADB problems;
+- device interaction or UI automation failures;
+- test failures;
+- debugging or crash recovery;
+- Bluetooth/HID availability;
+- camera, microphone, sensor, QR, or network test setup; or
+- inability to perform a device acceptance step automatically.
 
-An ALARM report to the Project Owner states the event, affected issue/Worker, exact owner
-action, and safe repository/device/process state. After raising it, preserve state and wait.
+For those cases:
 
-Human gates are restricted to steps that actually require owner judgment, credentials, or
-physical action after safe automation has been exhausted. ADB-capable unlock-independent
-device setup, permission handling, input/UI automation, application lifecycle, and evidence
-capture must not interrupt the owner. Human gates include an unlock or cable/peripheral
-action that ADB cannot perform, secret/login entry, specification changes,
-destructive/security-sensitive actions not already approved, new hosts/profiles or
-concurrency above four, and ambiguity that materially changes visible behavior.
+1. capture the exact device/test state and relevant traces;
+2. perform bounded safe automated recovery;
+3. if the acceptance prerequisite remains unavailable, record the exact automation
+   limitation and current safe state;
+4. report it to the Manager; and
+5. have the Manager discuss any required disposition remotely with the CTO and Project
+   Owner.
+
+Never convert such a condition into a request for physical RG/peripheral action.
+
+Remote governance gates and ALARM-worthy events include specification/article approval,
+credentials or login handling, destructive/security-sensitive authorization, release
+signing/go-no-go, unsafe repository state, and other decisions requiring human judgment.
+
+An ALARM report states the event, affected issue/Worker, exact remote judgment or
+authorization required, and current safe repository/device/process state.
 
 ## 11. Privileged commands
 
@@ -425,9 +497,11 @@ and close only that command window after completion. Never capture or pass a sud
   the required or approved build contract; all reproducible builds use `./gradlew`.
 - `ANDROID_HOME` and `ANDROID_SDK_ROOT` were unset in the Manager shell; the scaffold
   commits no machine-specific SDK path and may use an untracked `local.properties` on hosts.
-- The physical device is connected now. Runtime permissions and device/UI setup are
-  automated through ADB when supported; only residual physical unlock, cable, or peripheral
-  pairing actions that cannot be automated remain human gates.
+- The target RG is expected to remain attached to `u4090` as an unattended test device.
+  Runtime permissions, device/UI setup, lifecycle, input, debugging, recovery, and evidence
+  capture are automation-only. Loss of ADB/device/peripheral state that cannot be restored
+  automatically is an engineering/acceptance limitation to report remotely; it is not a
+  physical Owner gate.
 - System WebView 95 capability and the pinned Paseo relay crypto bundle are covered by the
   executable #2 instrumentation probe described above; full Relay connection lifecycle is
   still owned by later tickets.
