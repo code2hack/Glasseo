@@ -309,21 +309,8 @@ export class TimelineDestinationBody implements DestinationBody {
     this.olderPending = true;
     this.olderLoadCount++;
     const key = { ...this.key };
-    const anchor = this.captureAnchor();
-    const expectedAnchorId = this.snapshot.rows[0]?.id ?? null;
-    const expectedAnchorOffset = expectedAnchorId
-      ? this.offsetFor(expectedAnchorId)
-      : anchor.offset;
     try {
-      const result = await this.timeline.loadOlder(key);
-      if (!this.disposed && sameAgentKey(this.key, key))
-        this.restoreAnchor({
-          id: result.anchorRowId ?? anchor.id,
-          offset:
-            result.anchorRowId === expectedAnchorId
-              ? expectedAnchorOffset
-              : anchor.offset,
-        });
+      await this.timeline.loadOlder(key);
     } finally {
       this.olderPending = false;
     }

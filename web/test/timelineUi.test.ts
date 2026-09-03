@@ -237,6 +237,83 @@ test("Timeline preserves reading anchors across live, prepend, and Agent switche
   view.dispose();
 });
 
+test("pending older load does not override a newer user scroll", async () => {
+  const { view, viewport, finishOlder, prepended } = pendingOlderTimeline();
+  view.update(context(prepended));
+  assert.equal(viewport.scrollTop, 100);
+
+  viewport.scrollTop = 200;
+  viewport.dispatch("scroll");
+  finishOlder({ anchorRowId: "0" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(viewport.scrollTop, 200);
+  view.dispose();
+});
+
+test("pending older load does not override long PRIMARY latest intent", async () => {
+  const { view, viewport, finishOlder, prepended } = pendingOlderTimeline();
+  view.update(context(prepended));
+  view.handleInput(input("PRIMARY", "LONG", 1));
+  assert.equal(viewport.scrollTop, viewport.scrollHeight);
+
+  finishOlder({ anchorRowId: "0" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(viewport.scrollTop, viewport.scrollHeight);
+  view.dispose();
+});
+
+test("failed and reset older loads do not move the current viewport", async () => {
+  const failed = pendingOlderTimeline();
+  failed.viewport.scrollTop = 75;
+  failed.finishOlder({ anchorRowId: null });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(failed.viewport.scrollTop, 75);
+  failed.view.dispose();
+
+  const reset = pendingOlderTimeline();
+  reset.view.update(
+    context({
+      ...snapshot([
+        row("replacement", {
+          type: "assistant_message",
+          text: "replacement",
+        }),
+      ]),
+      range: { epoch: "replacement", startSeq: 1, endSeq: 1 },
+      error: "reset",
+    }),
+  );
+  const resetPosition = reset.viewport.scrollTop;
+  reset.finishOlder({ anchorRowId: "0" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(reset.viewport.scrollTop, resetPosition);
+  reset.view.dispose();
+});
+
+test("Agent switches and disposal fence pending older loads", async () => {
+  const switched = pendingOlderTimeline();
+  switched.view.update(
+    context({
+      ...snapshot(switched.rows.slice(0, 3)),
+      key: { serverId: "server", agentId: "other" },
+      following: false,
+      atLatest: false,
+    }),
+  );
+  switched.viewport.scrollTop = 25;
+  switched.finishOlder({ anchorRowId: "0" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(switched.viewport.scrollTop, 25);
+  switched.view.dispose();
+
+  const disposed = pendingOlderTimeline();
+  disposed.viewport.scrollTop = 40;
+  disposed.view.dispose();
+  disposed.finishOlder({ anchorRowId: "0" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(disposed.viewport.scrollTop, 40);
+});
+
 test("destination changes dispose bodies and the router delegates each terminal once", () => {
   installDom();
   const root = new FakeElement("main") as unknown as HTMLElement;
@@ -471,6 +548,50 @@ function input(
   timeMillis = 1,
 ): SemanticInput {
   return { type: "semantic-input", control, action, interactionId, timeMillis };
+}
+
+function pendingOlderTimeline() {
+  installDom();
+  let finishOlder!: (value: { anchorRowId: string | null }) => void;
+  const view = new TimelineDestinationBody({
+    loadOlder: () =>
+      new Promise<{ anchorRowId: string | null }>((resolve) => {
+        finishOlder = resolve;
+      }),
+    setFollowing() {},
+    setAtLatest() {},
+    acknowledgeLatest() {},
+  });
+  const root = new FakeElement("main") as unknown as HTMLElement;
+  const rows = Array.from({ length: 6 }, (_, index) =>
+    row(String(index), { type: "assistant_message", text: `row ${index}` }),
+  );
+  const current = {
+    ...snapshot(rows),
+    following: false,
+    atLatest: false,
+    hasOlder: true,
+  };
+  view.mount(root);
+  view.update(context(current));
+  const viewport = root.children[0] as unknown as FakeElement;
+  viewport.dispatch("scroll");
+  return {
+    view,
+    viewport,
+    rows,
+    finishOlder,
+    prepended: {
+      ...current,
+      revision: 2,
+      hasOlder: false,
+      rows: [
+        row("-2", { type: "assistant_message", text: "older 2" }),
+        row("-1", { type: "assistant_message", text: "older 1" }),
+        ...rows,
+      ],
+    },
+  };
 }
 
 function emptyDirectory() {
