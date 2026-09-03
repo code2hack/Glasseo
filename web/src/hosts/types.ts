@@ -5,6 +5,7 @@ import type {
   PaseoRuntime,
   PaseoRuntimeOptions,
 } from "../paseo/adapter";
+import type { TimelineRuntime } from "../timeline/types";
 import { validatedRelayConnection } from "./relay";
 
 export const HOST_PROFILE_VERSION = 1 as const;
@@ -81,7 +82,8 @@ export type HostDirectoryRuntime = Pick<
   | "getAgent"
   | "listUsage"
   | "subscribeDirectory"
->;
+> &
+  TimelineRuntime;
 export type HostRuntimeLease = {
   serverId: string;
   slotGeneration: number;
@@ -107,7 +109,10 @@ export function isHostDirectoryRuntime(
     typeof candidate.listAgents === "function" &&
     typeof candidate.getAgent === "function" &&
     typeof candidate.listUsage === "function" &&
-    typeof candidate.subscribeDirectory === "function"
+    typeof candidate.subscribeDirectory === "function" &&
+    typeof candidate.getTimeline === "function" &&
+    typeof candidate.setTimelineSubscription === "function" &&
+    typeof candidate.subscribeTimeline === "function"
   );
 }
 

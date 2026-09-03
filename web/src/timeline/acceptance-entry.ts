@@ -2,6 +2,7 @@ import { DirectoryCoordinator } from "../directory/coordinator";
 import { IndexedDbDirectoryStorage } from "../directory/storage";
 import { HostRegistry } from "../hosts/registry";
 import { IndexedDbHostStorage } from "../hosts/storage";
+import { bindTimeline } from "./binding";
 import { TimelineCoordinator } from "./coordinator";
 import { timelineAcceptanceStatus } from "./acceptance";
 import { IndexedDbTimelineStorage } from "./storage";
@@ -19,6 +20,7 @@ const directory = new DirectoryCoordinator(
   new IndexedDbDirectoryStorage(),
 );
 const coordinator = new TimelineCoordinator(new IndexedDbTimelineStorage());
+bindTimeline(coordinator, directory, registry);
 void directory.restore();
 
 Object.defineProperty(window, "__glasseoTimelineAcceptance", {
@@ -30,6 +32,15 @@ Object.defineProperty(window, "__glasseoTimelineAcceptance", {
       coordinator.activate(activation),
     refresh: () => coordinator.refresh(),
     loadOlder: () => coordinator.loadOlder(),
+    selectAgent: (index: number) => {
+      const agent = directory.snapshot().orderedAgents[index];
+      return agent
+        ? directory.selectAgent({
+            serverId: agent.serverId,
+            agentId: agent.agentId,
+          })
+        : false;
+    },
     status: () => timelineAcceptanceStatus(coordinator),
     runDeterministic: runDeterministicAcceptance,
     directoryStatus: () => ({

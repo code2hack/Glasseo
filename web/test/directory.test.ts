@@ -623,6 +623,13 @@ class FakeDirectoryRuntime implements HostDirectoryRuntime {
       providers: [],
     };
   }
+  getTimeline(): Promise<never> {
+    return Promise.reject(new Error("unused timeline fixture"));
+  }
+  async setTimelineSubscription() {}
+  subscribeTimeline() {
+    return () => {};
+  }
   subscribeDirectory(listener: (event: PaseoDirectoryEvent) => void) {
     this.listeners.add(listener);
     this.staleListeners.add(listener);

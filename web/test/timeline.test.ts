@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { FetchAgentTimelineResponseMessageSchema } from "@getpaseo/protocol/messages";
 import type { AgentKey } from "../src/directory/types";
+import type { GlobalAgentDirectorySnapshot } from "../src/directory/types";
+import type {
+  HostRuntimeLease,
+  HostRuntimeLeaseListener,
+} from "../src/hosts/types";
+import { bindTimeline } from "../src/timeline/binding";
 import {
   TimelineCoordinator,
   mergeTimelineRows,
@@ -316,6 +322,209 @@ test("a failed tail keeps buffered live rows visible and reports a recoverable e
   assert.equal(coordinator.currentSnapshot()?.error, "sync_error");
 });
 
+test("unsequenced live rows stay provisional until authoritative projection replaces them", async () => {
+  const runtime = new FakeRuntime();
+  runtime.responses.push(page("agent", "tail", 1, 1));
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  await coordinator.activate(
+    activation({ serverId: "alpha", agentId: "agent" }, runtime),
+  );
+  const tail = deferred<PaseoTimeline>();
+  runtime.impl = () => tail.promise;
+  runtime.emit(stream("agent"));
+  await settle();
+  assert.equal(coordinator.currentSnapshot()?.rows.at(-1)?.provisional, true);
+  const projected = page("agent", "after", 2, 2);
+  tail.resolve({
+    ...projected,
+    entries: projected.entries.map((entry) => ({ ...entry, item: item(99) })),
+  });
+  await settle();
+  assert.equal(
+    coordinator.currentSnapshot()?.rows.some(({ provisional }) => provisional),
+    false,
+  );
+  assert.equal(coordinator.currentSnapshot()?.range?.endSeq, 2);
+});
+
+test("stale cursor catch-up replaces from an authoritative tail", async () => {
+  const runtime = new FakeRuntime();
+  runtime.responses.push(
+    page("agent", "tail", 1, 1),
+    { ...page("agent", "after", 2, 2), staleCursor: true },
+    page("agent", "tail", 10, 10, { epoch: "epoch-2" }),
+  );
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  await coordinator.activate(
+    activation({ serverId: "alpha", agentId: "agent" }, runtime),
+  );
+  runtime.emit(stream("agent", 3));
+  await settle();
+  assert.deepEqual(
+    runtime.requests.map(({ direction }) => direction),
+    ["tail", "after", "tail"],
+  );
+  assert.equal(coordinator.currentSnapshot()?.range?.epoch, "epoch-2");
+  assert.equal(coordinator.currentSnapshot()?.error, null);
+});
+
+test("live input arriving during multi-page catch-up remains canonical", async () => {
+  const runtime = new FakeRuntime();
+  runtime.responses.push(page("agent", "tail", 1, 1));
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  await coordinator.activate(
+    activation({ serverId: "alpha", agentId: "agent" }, runtime),
+  );
+  const firstAfter = deferred<PaseoTimeline>();
+  runtime.impl = () => firstAfter.promise;
+  runtime.emit(stream("agent", 4));
+  runtime.emit(stream("agent", 5));
+  runtime.impl = () =>
+    Promise.resolve(page("agent", "after", 4, 5, { hasNewer: false }));
+  firstAfter.resolve(page("agent", "after", 2, 3, { hasNewer: true }));
+  await settle();
+  assert.equal(coordinator.currentSnapshot()?.range?.endSeq, 5);
+  assert.equal(coordinator.currentSnapshot()?.rows.length, 5);
+  assert.equal(
+    coordinator.currentSnapshot()?.rows.some(({ provisional }) => provisional),
+    false,
+  );
+});
+
+test("concurrent older requests coalesce by the certified start cursor", async () => {
+  const runtime = new FakeRuntime();
+  runtime.responses.push(page("agent", "tail", 3, 4, { hasOlder: true }));
+  const coordinator = new TimelineCoordinator(new MemoryStorage());
+  await coordinator.activate(
+    activation({ serverId: "alpha", agentId: "agent" }, runtime),
+  );
+  const older = deferred<PaseoTimeline>();
+  runtime.impl = () => older.promise;
+  const first = coordinator.loadOlder();
+  const second = coordinator.loadOlder();
+  assert.equal(first, second);
+  assert.equal(
+    runtime.requests.filter(({ direction }) => direction === "before").length,
+    1,
+  );
+  older.resolve(page("agent", "before", 1, 3));
+  await first;
+  assert.equal(coordinator.currentSnapshot()?.range?.startSeq, 1);
+});
+
+test("binding deletes confirmed Agent and host removals but retains transient offline cache", async () => {
+  const alpha = { serverId: "alpha", agentId: "one" };
+  const alphaOther = { serverId: "alpha", agentId: "other" };
+  const beta = { serverId: "beta", agentId: "two" };
+  const storage = new MemoryStorage();
+  for (const key of [alpha, alphaOther, beta])
+    storage.records.set(
+      timelineKey(key),
+      cache(key, page(key.agentId, "tail", 1, 1)),
+    );
+  const alphaRuntime = leaseRuntime(alpha.agentId);
+  const betaRuntime = leaseRuntime(beta.agentId);
+  const directory = new FakeDirectorySource(
+    directorySnapshot([alpha, beta], alpha),
+  );
+  const leases = new FakeLeaseSource([
+    hostLease("alpha", alphaRuntime),
+    hostLease("beta", betaRuntime),
+  ]);
+  const coordinator = new TimelineCoordinator(storage);
+  const dispose = bindTimeline(coordinator, directory, leases);
+  await settle();
+
+  leases.emit([
+    { ...hostLease("alpha", alphaRuntime), status: "offline" },
+    hostLease("beta", betaRuntime),
+  ]);
+  await settle();
+  assert.equal(storage.records.has(timelineKey(alpha)), true);
+  assert.equal(storage.records.has(timelineKey(alphaOther)), true);
+
+  directory.emit(directorySnapshot([beta], beta));
+  await settle();
+  assert.equal(storage.records.has(timelineKey(alpha)), false);
+  assert.equal(storage.records.has(timelineKey(alphaOther)), true);
+
+  leases.emit([hostLease("beta", betaRuntime)]);
+  await settle();
+  assert.equal(storage.records.has(timelineKey(alphaOther)), false);
+  assert.equal(storage.records.has(timelineKey(beta)), true);
+  dispose();
+});
+
+test("binding cleans startup removals and retries failed storage deletion", async () => {
+  const removed = { serverId: "alpha", agentId: "removed" };
+  const storage = new MemoryStorage();
+  storage.records.set(
+    timelineKey(removed),
+    cache(removed, page(removed.agentId, "tail", 1, 1)),
+  );
+  const directory = new FakeDirectorySource({
+    ...directorySnapshot([removed], removed),
+    restoring: true,
+  });
+  const coordinator = new TimelineCoordinator(storage);
+  const dispose = bindTimeline(coordinator, directory, new FakeLeaseSource([]));
+
+  storage.failAgentDeletes = true;
+  directory.emit(directorySnapshot([], null));
+  await settle();
+  assert.equal(storage.records.has(timelineKey(removed)), true);
+
+  storage.failAgentDeletes = false;
+  directory.emit(directorySnapshot([], null));
+  await settle();
+  assert.equal(storage.records.has(timelineKey(removed)), false);
+  dispose();
+});
+
+test("binding cancels a failed cleanup when the identity reappears", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const storage = new MemoryStorage();
+  storage.records.set(
+    timelineKey(key),
+    cache(key, page(key.agentId, "tail", 1, 1)),
+  );
+  const directory = new FakeDirectorySource(directorySnapshot([key], key));
+  const coordinator = new TimelineCoordinator(storage);
+  const dispose = bindTimeline(coordinator, directory, new FakeLeaseSource([]));
+
+  storage.failAgentDeletes = true;
+  directory.emit(directorySnapshot([], null));
+  await settle();
+  storage.failAgentDeletes = false;
+  directory.emit(directorySnapshot([key], key));
+  directory.emit(directorySnapshot([key], key));
+  await settle();
+  assert.equal(storage.records.has(timelineKey(key)), true);
+  dispose();
+
+  const hostStorage = new MemoryStorage();
+  hostStorage.records.set(
+    timelineKey(key),
+    cache(key, page(key.agentId, "tail", 1, 1)),
+  );
+  const runtime = leaseRuntime(key.agentId);
+  const hostLeases = new FakeLeaseSource([hostLease(key.serverId, runtime)]);
+  const hostDispose = bindTimeline(
+    new TimelineCoordinator(hostStorage),
+    new FakeDirectorySource(directorySnapshot([], null)),
+    hostLeases,
+  );
+  hostStorage.failHostDeletes = true;
+  hostLeases.emit([]);
+  await settle();
+  hostStorage.failHostDeletes = false;
+  hostLeases.emit([hostLease(key.serverId, runtime)]);
+  hostLeases.emit([hostLease(key.serverId, runtime)]);
+  await settle();
+  assert.equal(hostStorage.records.has(timelineKey(key)), true);
+  hostDispose();
+});
+
 test("cache validation and explicit row/byte bounds preserve only certified rows", () => {
   const key = { serverId: "alpha", agentId: "agent" };
   const source = cache(key, page("agent", "tail", 1, MAX_TIMELINE_ROWS + 5));
@@ -473,6 +682,8 @@ class FakeRuntime implements TimelineRuntime {
 
 class MemoryStorage implements TimelineStorage {
   readonly records = new Map<string, CachedAgentTimeline>();
+  failAgentDeletes = false;
+  failHostDeletes = false;
 
   async loadAgent(key: AgentKey): Promise<unknown | null> {
     return this.records.get(timelineKey(key)) ?? null;
@@ -484,12 +695,143 @@ class MemoryStorage implements TimelineStorage {
       this.records.set(key, record);
   }
   async deleteAgent(key: AgentKey): Promise<void> {
+    if (this.failAgentDeletes) throw new Error("fixture delete failure");
     this.records.delete(timelineKey(key));
   }
   async deleteHost(serverId: string): Promise<void> {
+    if (this.failHostDeletes) throw new Error("fixture delete failure");
     for (const [key, record] of this.records)
       if (record.key.serverId === serverId) this.records.delete(key);
   }
+}
+
+class FakeDirectorySource {
+  private listener: (snapshot: GlobalAgentDirectorySnapshot) => void = () => {};
+
+  constructor(private value: GlobalAgentDirectorySnapshot) {}
+
+  snapshot(): GlobalAgentDirectorySnapshot {
+    return this.value;
+  }
+
+  subscribe(listener: (snapshot: GlobalAgentDirectorySnapshot) => void) {
+    this.listener = listener;
+    listener(this.value);
+    return () => {
+      this.listener = () => {};
+    };
+  }
+
+  emit(value: GlobalAgentDirectorySnapshot): void {
+    this.value = value;
+    this.listener(value);
+  }
+}
+
+class FakeLeaseSource {
+  private listener: HostRuntimeLeaseListener = () => {};
+
+  constructor(private value: readonly HostRuntimeLease[]) {}
+
+  subscribeRuntimeLeases(listener: HostRuntimeLeaseListener) {
+    this.listener = listener;
+    listener(this.value);
+    return () => {
+      this.listener = () => {};
+    };
+  }
+
+  emit(value: readonly HostRuntimeLease[]): void {
+    this.value = value;
+    this.listener(value);
+  }
+}
+
+function directorySnapshot(
+  keys: readonly AgentKey[],
+  current: AgentKey | null,
+): GlobalAgentDirectorySnapshot {
+  return {
+    hosts: new Map(),
+    orderedAgents: keys.map(({ serverId, agentId }) => ({
+      serverId,
+      agentId,
+      workspaceId: null,
+      projectId: null,
+      projectKey: "fixture",
+      projectName: "fixture",
+      workspaceName: null,
+      title: null,
+      provider: "codex",
+      model: null,
+      thinkingOptionId: null,
+      currentModeId: null,
+      availableModes: [],
+      status: "idle",
+      activeTurn: null,
+      createdAt: "2026-09-03T00:00:00Z",
+      updatedAt: "2026-09-03T00:00:00Z",
+      lastUserMessageAt: null,
+      cwd: "/fixture",
+      labels: {},
+      archivedAt: null,
+      pendingPermissions: [],
+      syncSeq: 1,
+    })),
+    current,
+    destination: current ? "agent" : "config",
+    restoring: false,
+  };
+}
+
+function leaseRuntime(agentId: string) {
+  const timeline = new FakeRuntime();
+  timeline.responses.push(page(agentId, "tail", 1, 1));
+  return Object.assign(timeline, {
+    getHost: () => null,
+    listProjects: async () => ({ requestId: "projects", projects: [] }),
+    listWorkspaces: async () => ({
+      requestId: "workspaces",
+      entries: [],
+      emptyProjects: [],
+      pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+    }),
+    listAgents: async () => ({
+      requestId: "agents",
+      entries: [],
+      pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+    }),
+    getAgent: async () => null,
+    listUsage: async () => ({
+      requestId: "usage",
+      fetchedAt: "2026-09-03T00:00:00Z",
+      providers: [],
+    }),
+    subscribeDirectory: () => () => {},
+  });
+}
+
+function hostLease(
+  serverId: string,
+  runtime: ReturnType<typeof leaseRuntime>,
+): HostRuntimeLease {
+  return {
+    serverId,
+    slotGeneration: 1,
+    connectionEpoch: 1,
+    status: "online",
+    profile: {
+      schemaVersion: 1,
+      serverId,
+      relayEndpoint: "relay.example:443",
+      useTls: true,
+      daemonPublicKey: "fixture-public-key",
+      hostname: "fixture-host",
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    runtime,
+  };
 }
 
 function activation(

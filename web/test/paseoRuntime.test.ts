@@ -300,6 +300,8 @@ test("no RPC or event crosses the boundary before host acceptance", async () => 
   runtime.subscribeEvents((event) => events.push(event.type));
   const directoryEvents: string[] = [];
   runtime.subscribeDirectory((event) => directoryEvents.push(event.type));
+  const timelineEvents: string[] = [];
+  runtime.subscribeTimeline((event) => timelineEvents.push(event.type));
   const pending = runtime.connect();
   const transport = harness.transports[0];
   transport.open();
@@ -318,8 +320,21 @@ test("no RPC or event crosses the boundary before host acceptance", async () => 
     type: "agent_update",
     payload: { kind: "remove", agentId: "must-not-escape" },
   });
+  transport.receive({
+    type: "agent_stream",
+    payload: {
+      agentId: "must-not-escape",
+      event: {
+        type: "timeline",
+        provider: "codex",
+        item: { type: "assistant_message", text: "redacted" },
+      },
+      timestamp: "2026-09-03T00:00:00Z",
+    },
+  });
   assert.deepEqual(events, []);
   assert.deepEqual(directoryEvents, []);
+  assert.deepEqual(timelineEvents, []);
   transport.receive({
     type: "status",
     payload: {
@@ -607,6 +622,8 @@ test("timeline events preserve exact v0.7.0 facts, isolate consumers, and unsubs
   const unsubscribe = runtime.subscribeTimeline((event) =>
     received.push(event),
   );
+  const retainedThroughClose: unknown[] = [];
+  runtime.subscribeTimeline((event) => retainedThroughClose.push(event));
 
   transport.receive({
     type: "agent_stream",
@@ -662,8 +679,15 @@ test("timeline events preserve exact v0.7.0 facts, isolate consumers, and unsubs
     payload: { agentId: "agent-1", epoch: "epoch-3" },
   });
   assert.equal(received.length, 2);
+  assert.equal(retainedThroughClose.length, 3);
   assert.equal(runtime.getHost()?.serverId, "host-1");
   await runtime.close();
+  transport.receive({
+    type: "agent.timeline.replacement",
+    payload: { agentId: "agent-1", epoch: "epoch-after-close" },
+  });
+  assert.equal(received.length, 2);
+  assert.equal(retainedThroughClose.length, 3);
 });
 
 test("real adapter pages exact directory RPCs into a normalized replica", async () => {
