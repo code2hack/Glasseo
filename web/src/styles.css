@@ -5,53 +5,86 @@
   color: #fff;
 }
 
-body {
+* {
   box-sizing: border-box;
-  display: grid;
-  min-height: 100vh;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
   margin: 0;
-  padding: 32px;
-  place-items: center;
+  overflow: hidden;
+}
+
+#app {
+  display: grid;
+  grid-template-rows: 64px minmax(0, 1fr);
+}
+
+#agent-header {
+  min-width: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid #65727a;
+  background: #050708;
+  text-align: left;
+}
+
+#agent-header > div {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+#agent-header-line-1 {
+  font-size: 20px;
+  line-height: 26px;
+}
+
+#agent-header-line-2 {
+  color: #b8c4cc;
+  font-size: 16px;
+  line-height: 22px;
+}
+
+#agent-header[data-status="error"] #agent-header-line-2 {
+  color: #ff9b9b;
+}
+
+#agent-body {
+  display: grid;
+  min-height: 0;
+  padding: 24px;
+  place-content: center;
   text-align: center;
 }
 
-#hosts {
-  display: grid;
-  gap: 8px;
-  width: 100%;
-}
-
-#hosts h2 {
+h1,
+p {
   margin: 0;
-}
-
-#hosts ul {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-#hosts li {
-  display: grid;
-  gap: 4px;
 }
 
 h1 {
-  margin: 0 0 16px;
   font-size: 40px;
 }
 
 p {
-  margin: 0;
   color: #b8c4cc;
   font-size: 20px;
 }
 
-main {
+#diagnostics:not([hidden]) {
   display: grid;
+  min-height: 100%;
   gap: 16px;
+  padding: 32px;
+  place-content: center;
+  text-align: center;
 }
 
 button {
@@ -76,11 +109,6 @@ button {
 output {
   overflow-wrap: anywhere;
   color: #8ed6ff;
-  font-size: 14px;
-}
-
-.hid-input-trace-heading {
-  color: #fff;
   font-size: 14px;
 }
 

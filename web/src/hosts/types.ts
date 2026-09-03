@@ -78,6 +78,8 @@ export type HostDirectoryRuntime = Pick<
   | "listProjects"
   | "listWorkspaces"
   | "listAgents"
+  | "getAgent"
+  | "listUsage"
   | "subscribeDirectory"
 >;
 export type HostRuntimeLease = {
@@ -103,6 +105,8 @@ export function isHostDirectoryRuntime(
     typeof candidate.listProjects === "function" &&
     typeof candidate.listWorkspaces === "function" &&
     typeof candidate.listAgents === "function" &&
+    typeof candidate.getAgent === "function" &&
+    typeof candidate.listUsage === "function" &&
     typeof candidate.subscribeDirectory === "function"
   );
 }

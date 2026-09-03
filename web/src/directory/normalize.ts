@@ -138,6 +138,13 @@ export function normalizeAgent(
     title: agent.title,
     provider: agent.provider,
     model: agent.model,
+    thinkingOptionId:
+      agent.effectiveThinkingOptionId ?? agent.thinkingOptionId ?? null,
+    currentModeId: agent.currentModeId,
+    availableModes: agent.availableModes.map(({ id, label }) => ({
+      id,
+      label,
+    })),
     status: agent.status,
     activeTurn: agent.activeTurn ?? null,
     createdAt: agent.createdAt,
@@ -257,6 +264,10 @@ function validateAgent(value: unknown, serverId: string): DirectoryAgent {
     !(value.title === null || string(value.title)) ||
     !text(value.provider) ||
     !(value.model === null || string(value.model)) ||
+    !(value.thinkingOptionId === null || string(value.thinkingOptionId)) ||
+    !(value.currentModeId === null || string(value.currentModeId)) ||
+    !Array.isArray(value.availableModes) ||
+    !value.availableModes.every(mode) ||
     !text(value.status) ||
     !activeTurn(value.activeTurn) ||
     !timestamp(value.createdAt) ||
@@ -291,6 +302,15 @@ function activeTurn(value: unknown): boolean {
       Object.keys(value).length === 2 &&
       text(value.turnId) &&
       (value.startedAt === null || timestamp(value.startedAt)))
+  );
+}
+
+function mode(value: unknown): boolean {
+  return (
+    record(value) &&
+    Object.keys(value).length === 2 &&
+    text(value.id) &&
+    text(value.label)
   );
 }
 

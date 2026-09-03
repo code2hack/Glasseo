@@ -1,6 +1,6 @@
 import type { StoredHostProfile } from "../hosts/types";
 
-export const DIRECTORY_CACHE_VERSION = 1 as const;
+export const DIRECTORY_CACHE_VERSION = 2 as const;
 
 export type AgentKey = Readonly<{ serverId: string; agentId: string }>;
 export type SourceToken = Readonly<{
@@ -47,6 +47,9 @@ export type DirectoryAgent = Readonly<{
   title: string | null;
   provider: string;
   model: string | null;
+  thinkingOptionId: string | null;
+  currentModeId: string | null;
+  availableModes: readonly Readonly<{ id: string; label: string }>[];
   status: string;
   activeTurn: { turnId: string; startedAt: string | null } | null;
   createdAt: string;
@@ -93,6 +96,7 @@ export type GlobalAgentDirectorySnapshot = Readonly<{
   orderedAgents: readonly DirectoryAgent[];
   current: AgentKey | null;
   destination: "agent" | "config";
+  restoring: boolean;
 }>;
 
 export type CachedHostDirectory = Readonly<{

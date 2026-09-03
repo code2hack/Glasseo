@@ -332,6 +332,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             safeBrowsingEnabled = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
         }
         WebView.setWebContentsDebuggingEnabled(applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
         check(WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
@@ -902,6 +904,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     internal fun evaluateJavascriptForTest(script: String) {
         webView.evaluateJavascript(script, null)
+    }
+
+    internal fun evaluateJavascriptForTest(script: String, callback: (String) -> Unit) {
+        webView.evaluateJavascript(script, callback)
     }
 
     internal fun readPairingStateForTest(callback: (String) -> Unit) {
