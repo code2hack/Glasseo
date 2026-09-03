@@ -105,11 +105,12 @@ class MemoryStorage implements DraftStorage {
       (record) => record.key.serverId === serverId,
     );
   }
-  async putAgent(record: DraftRecord): Promise<void> {
+  async putAgent(record: DraftRecord): Promise<boolean> {
     this.records.set(
       JSON.stringify([record.key.serverId, record.key.agentId]),
       record,
     );
+    return true;
   }
   async deleteAgent(key: AgentKey): Promise<void> {
     this.records.delete(JSON.stringify([key.serverId, key.agentId]));

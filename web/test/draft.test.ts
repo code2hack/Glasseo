@@ -204,25 +204,147 @@ test("controller fences delayed loads and keeps in-memory state on write failure
   assert.equal(controller.snapshot().session?.record.text, "retained");
   assert.equal(controller.snapshot().storageStatus, "error");
   storage.failWrites = false;
+  await controller.activate(fast);
+  assert.equal(storage.records.get(draftKey(fast))?.text, "retained");
+  assert.equal(controller.snapshot().storageStatus, "ready");
   await controller.replaceText("recovered");
   assert.equal(controller.snapshot().storageStatus, "ready");
 });
 
-test("same-Agent delayed loads and writes cannot replace newer revisions", async () => {
+test("text cursor mutation rejects non-integers without changing the Draft", async () => {
+  const storage = new MemoryDraftStorage();
+  const controller = new DraftController(storage);
+  await controller.activate({ serverId: "alpha", agentId: "agent" });
+  const before = controller.snapshot().session!.record;
+
+  for (const offset of [Number.NaN, Number.POSITIVE_INFINITY, 1.5])
+    await assert.rejects(controller.setTextCursor(offset));
+  assert.equal(controller.snapshot().session?.record, before);
+  assert.equal(storage.records.size, 0);
+});
+
+test("dirty retry yields to newer storage authority on the next re-entry", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "agent" };
+  const controller = new DraftController(storage);
+  await controller.activate(key);
+  storage.failWrites = true;
+  await controller.replaceText("dirty local text");
+  storage.failWrites = false;
+  storage.records.set(
+    draftKey(key),
+    draft({ key, revision: 50, text: "newer stored text" }),
+  );
+
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "error");
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(controller.snapshot().session?.record.text, "newer stored text");
+});
+
+test("pending navigation and requests replay over a higher stored revision", async () => {
   const storage = new MemoryDraftStorage();
   const key = { serverId: "alpha", agentId: "agent" };
   const read = deferred<unknown | null>();
   storage.loads.set(draftKey(key), read.promise);
   const controller = new DraftController(storage);
-  const activating = controller.activate(key);
-  const edit = controller.replaceText("newer than load");
-  read.resolve(draft({ key, revision: 50, text: "stale load" }));
+  const activating = controller.activate(key, ["request-a"]);
+  assert.equal(await controller.handle(input("LEFT", 90, "BEGIN")), true);
+  await controller.setRequestDescriptors(["request-b", "request-a"]);
+  assert.equal(await controller.handle(input("LEFT", 91, "BEGIN")), true);
+  await controller.appendImageRefs([image("pending-image")]);
+  await controller.setTextCursor(4);
+  read.resolve(
+    draft({
+      key,
+      revision: 50,
+      text: "stored text",
+      images: [image("stored-image")],
+      activeArea: "images",
+      cursors: {
+        requestId: "request-a",
+        textOffset: 6,
+        imageId: "stored-image",
+      },
+    }),
+  );
   await activating;
-  await edit;
-  assert.equal(controller.snapshot().session?.record.text, "newer than load");
+  const restored = controller.snapshot().session!;
+  assert.equal(restored.record.text, "stored text");
+  assert.deepEqual(restored.record.images, [
+    image("stored-image"),
+    image("pending-image"),
+  ]);
+  assert.equal(restored.record.activeArea, "request");
+  assert.equal(restored.record.cursors.requestId, "request-a");
+  assert.deepEqual(restored.requestIds, ["request-b", "request-a"]);
+  assert.deepEqual(restored.handledInteractionIds, [90, 91]);
+  assert.equal(restored.record.cursors.textOffset, 4);
+  assert.equal(restored.record.revision, 54);
+  assert.deepEqual(storage.records.get(draftKey(key)), restored.record);
+
+  assert.equal(await controller.handle(input("LEFT", 91, "SHORT")), true);
+  assert.equal(controller.snapshot().session?.record.revision, 54);
+});
+
+test("a transient read failure remains retryable and never caches a blank Draft", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "agent" };
+  storage.loads.set(draftKey(key), Promise.reject(new Error("read failed")));
+  const controller = new DraftController(storage);
+
+  await controller.activate(key, ["request"]);
+  assert.equal(controller.snapshot().storageStatus, "error");
+  assert.equal(controller.snapshot().session?.record.text, "");
+  await controller.cycleArea("left");
+  assert.equal(storage.records.has(draftKey(key)), false);
+  storage.loads.delete(draftKey(key));
+  storage.records.set(
+    draftKey(key),
+    draft({ key, revision: 7, text: "recovered stored text" }),
+  );
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(
+    controller.snapshot().session?.record.text,
+    "recovered stored text",
+  );
+});
+
+test("a declined lower-revision write stays error until authoritative retry", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "agent" };
+  const read = deferred<unknown | null>();
+  storage.loads.set(draftKey(key), read.promise);
+  const controller = new DraftController(storage);
+  const activating = controller.activate(key, ["request"]);
+  await controller.cycleArea("left");
+  storage.records.set(
+    draftKey(key),
+    draft({ key, revision: 50, text: "newer authority" }),
+  );
+  read.resolve(null);
+
+  await activating;
+  assert.equal(controller.snapshot().storageStatus, "error");
+  assert.equal(storage.records.get(draftKey(key))?.text, "newer authority");
+  await controller.replaceText("must not overwrite authority");
+  assert.equal(storage.records.get(draftKey(key))?.text, "newer authority");
+  storage.loads.delete(draftKey(key));
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(controller.snapshot().session?.record.text, "newer authority");
+});
+
+test("same-Agent delayed writes cannot replace newer revisions", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "agent" };
+  const controller = new DraftController(storage);
+  await controller.activate(key);
 
   const delayedWrite = deferred<void>();
-  storage.writeDelays.set(2, delayedWrite.promise);
+  storage.writeDelays.set(1, delayedWrite.promise);
   const oldWrite = controller.replaceText("old write");
   const newWrite = controller.replaceText("new write");
   await newWrite;
@@ -231,7 +353,7 @@ test("same-Agent delayed loads and writes cannot replace newer revisions", async
   assert.equal(storage.records.get(draftKey(key))?.text, "new write");
 });
 
-test("delayed restore preserves terminal IDs handled while loading", async () => {
+test("delayed restore replays input once and preserves its handled ID", async () => {
   const storage = new MemoryDraftStorage();
   const key = { serverId: "alpha", agentId: "agent" };
   const read = deferred<unknown | null>();
@@ -241,9 +363,9 @@ test("delayed restore preserves terminal IDs handled while loading", async () =>
   assert.equal(await controller.handle(input("RIGHT", 90)), true);
   read.resolve(draft({ key, images: [image("image")] }));
   await activating;
-  assert.equal(controller.snapshot().session?.record.activeArea, "text");
+  assert.equal(controller.snapshot().session?.record.activeArea, "images");
   assert.equal(await controller.handle(input("RIGHT", 90)), true);
-  assert.equal(controller.snapshot().session?.record.activeArea, "text");
+  assert.equal(controller.snapshot().session?.record.activeArea, "images");
 });
 
 test("a corrupt record is replaced without poisoning sibling Agents", async () => {
@@ -269,10 +391,22 @@ test("IndexedDB Draft storage round-trips, fences revisions, and deletes exact s
   const alpha = { serverId: "alpha", agentId: "same" };
   const alphaOther = { serverId: "alpha", agentId: "other" };
   const beta = { serverId: "beta", agentId: "same" };
-  await storage.putAgent(draft({ key: alpha, revision: 2, text: "alpha" }));
-  await storage.putAgent(draft({ key: alphaOther, text: "other" }));
-  await storage.putAgent(draft({ key: beta, text: "beta" }));
-  await storage.putAgent(draft({ key: alpha, revision: 1, text: "stale" }));
+  assert.equal(
+    await storage.putAgent(draft({ key: alpha, revision: 2, text: "alpha" })),
+    true,
+  );
+  assert.equal(
+    await storage.putAgent(draft({ key: alphaOther, text: "other" })),
+    true,
+  );
+  assert.equal(
+    await storage.putAgent(draft({ key: beta, text: "beta" })),
+    true,
+  );
+  assert.equal(
+    await storage.putAgent(draft({ key: alpha, revision: 1, text: "stale" })),
+    false,
+  );
   assert.equal(((await storage.loadAgent(alpha)) as DraftRecord).text, "alpha");
   assert.deepEqual(
     (await storage.loadHost("alpha"))
@@ -314,6 +448,69 @@ test("lifecycle retains offline Drafts and cleans only confirmed Agent or host r
   await tick();
   assert.equal(storage.records.has(draftKey(other)), false);
   assert.equal(storage.records.has(draftKey(beta)), true);
+  dispose();
+});
+
+test("startup restoration retains cached identities until authority confirms removal", async () => {
+  const key = { serverId: "alpha", agentId: "cached" };
+  const storage = new MemoryDraftStorage();
+  storage.records.set(draftKey(key), draft({ key, text: "cached" }));
+  const directory = new FakeDirectory(directorySnapshot([key], true));
+  const leases = new FakeLeases([hostLease("alpha")]);
+  const dispose = bindDraftLifecycle(
+    new DraftController(storage),
+    directory,
+    leases,
+  );
+
+  directory.emit(directorySnapshot([], true));
+  await tick();
+  assert.equal(storage.records.has(draftKey(key)), true);
+  directory.emit(directorySnapshot([], false));
+  await tick();
+  assert.equal(storage.records.has(draftKey(key)), false);
+  dispose();
+});
+
+test("startup restoration retains cached offline Drafts without final authority", async () => {
+  const key = { serverId: "alpha", agentId: "cached" };
+  const storage = new MemoryDraftStorage();
+  storage.records.set(draftKey(key), draft({ key, text: "cached" }));
+  const directory = new FakeDirectory(directorySnapshot([key], true));
+  const leases = new FakeLeases([{ ...hostLease("alpha"), status: "offline" }]);
+  const dispose = bindDraftLifecycle(
+    new DraftController(storage),
+    directory,
+    leases,
+  );
+
+  directory.emit(directorySnapshot([], true));
+  await tick();
+  assert.equal(storage.records.has(draftKey(key)), true);
+  dispose();
+});
+
+test("startup cleanup is fenced when a cached Agent reappears", async () => {
+  const key = { serverId: "alpha", agentId: "cached" };
+  const storage = new MemoryDraftStorage();
+  storage.records.set(draftKey(key), draft({ key, text: "keep" }));
+  const directory = new FakeDirectory(directorySnapshot([key], true));
+  const leases = new FakeLeases([hostLease("alpha")]);
+  const dispose = bindDraftLifecycle(
+    new DraftController(storage),
+    directory,
+    leases,
+  );
+  const deletion = deferred<void>();
+  storage.deletes.set(draftKey(key), deletion.promise);
+
+  directory.emit(directorySnapshot([], false));
+  await tick();
+  directory.emit(directorySnapshot([key], false));
+  deletion.resolve();
+  await tick();
+  await tick();
+  assert.equal(storage.records.get(draftKey(key))?.text, "keep");
   dispose();
 });
 
@@ -469,12 +666,15 @@ class MemoryDraftStorage implements DraftStorage {
       (value) => value.key.serverId === serverId,
     );
   }
-  async putAgent(record: DraftRecord): Promise<void> {
+  async putAgent(record: DraftRecord): Promise<boolean> {
     if (this.failWrites) throw new Error("write failed");
     await this.writeDelays.get(record.revision);
     const present = this.records.get(draftKey(record.key));
-    if (!present || present.revision < record.revision)
+    if (!present || present.revision < record.revision) {
       this.records.set(draftKey(record.key), record);
+      return true;
+    }
+    return false;
   }
   async deleteAgent(key: DraftRecord["key"]): Promise<void> {
     if (this.failDeletes) throw new Error("delete failed");
@@ -536,6 +736,7 @@ class FakeLeases {
 
 function directorySnapshot(
   keys: readonly DraftRecord["key"][],
+  restoring = false,
 ): GlobalAgentDirectorySnapshot {
   return {
     hosts: new Map(),
@@ -545,7 +746,7 @@ function directorySnapshot(
     })) as unknown as GlobalAgentDirectorySnapshot["orderedAgents"],
     current: keys[0] ?? null,
     destination: keys.length ? "agent" : "config",
-    restoring: false,
+    restoring,
   };
 }
 

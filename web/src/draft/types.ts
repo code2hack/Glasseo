@@ -50,6 +50,10 @@ export type DraftAction =
   | SemanticInput
   | Readonly<{ type: "set-requests"; requestIds: readonly string[] }>
   | Readonly<{ type: "set-images"; images: readonly DraftImageRef[] }>
+  | Readonly<{ type: "append-images"; images: readonly DraftImageRef[] }>
+  | Readonly<{ type: "remove-images"; imageIds: readonly string[] }>
+  | Readonly<{ type: "replace-text"; text: string }>
+  | Readonly<{ type: "set-text-cursor"; textOffset: number }>
   | Readonly<{ type: "cycle-area"; direction: "left" | "right" }>
   | Readonly<{ type: "move-within-area"; direction: "up" | "down" }>;
 
@@ -70,7 +74,7 @@ export type DraftSnapshot = Readonly<{
 export interface DraftStorage {
   loadAgent(key: AgentKey): Promise<unknown | null>;
   loadHost(serverId: string): Promise<unknown[]>;
-  putAgent(record: DraftRecord): Promise<void>;
+  putAgent(record: DraftRecord): Promise<boolean>;
   deleteAgent(key: AgentKey): Promise<void>;
   deleteHost(serverId: string): Promise<void>;
 }

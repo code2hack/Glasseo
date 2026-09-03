@@ -50,8 +50,9 @@ export class IndexedDbDraftStorage implements DraftStorage {
     }
   }
 
-  putAgent(record: DraftRecord): Promise<void> {
-    return this.enqueue(async () => {
+  async putAgent(record: DraftRecord): Promise<boolean> {
+    let written = false;
+    await this.enqueue(async () => {
       const db = await this.open();
       try {
         const transaction = db.transaction(DRAFTS, "readwrite");
@@ -68,13 +69,16 @@ export class IndexedDbDraftStorage implements DraftStorage {
           } catch {
             // A corrupt row must not block a valid replacement.
           }
-        if (presentRevision < record.revision)
+        if (presentRevision < record.revision) {
           store.put({ id, serverId: record.key.serverId, record });
+          written = true;
+        }
         await completion(transaction);
       } finally {
         db.close();
       }
     });
+    return written;
   }
 
   deleteAgent(key: AgentKey): Promise<void> {

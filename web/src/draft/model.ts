@@ -92,11 +92,63 @@ export function reduceDraft(
     });
     return transition(state, next, true);
   }
-  if (action.type === "set-images") {
-    const next = reconcileSession({
+  if (
+    action.type === "set-images" ||
+    action.type === "append-images" ||
+    action.type === "remove-images"
+  ) {
+    const removed = new Set(
+      action.type === "remove-images" ? action.imageIds : [],
+    );
+    const images = uniqueImages(
+      action.type === "set-images"
+        ? action.images
+        : action.type === "append-images"
+          ? [...state.record.images, ...action.images]
+          : state.record.images.filter(({ id }) => !removed.has(id)),
+    );
+    if (sameImages(state.record.images, images))
+      return { state, effect: "none", handled: true };
+    const reconciled = reconcileSession({
       ...state,
-      record: { ...state.record, images: uniqueImages(action.images) },
+      record: { ...state.record, images },
     });
+    const next = {
+      ...reconciled,
+      record: {
+        ...reconciled.record,
+        revision: state.record.revision + 1,
+      },
+    };
+    return transition(state, next, true);
+  }
+  if (action.type === "replace-text" || action.type === "set-text-cursor") {
+    const record =
+      action.type === "replace-text"
+        ? {
+            ...state.record,
+            text: action.text,
+            cursors: {
+              ...state.record.cursors,
+              textOffset: validTextOffset(
+                action.text,
+                state.record.cursors.textOffset,
+              ),
+            },
+          }
+        : {
+            ...state.record,
+            cursors: {
+              ...state.record.cursors,
+              textOffset: validTextOffset(state.record.text, action.textOffset),
+            },
+          };
+    const unchanged =
+      action.type === "replace-text"
+        ? state.record.text === record.text &&
+          state.record.cursors.textOffset === record.cursors.textOffset
+        : state.record.cursors.textOffset === record.cursors.textOffset;
+    const next = unchanged ? state : { ...state, record: revise(record) };
     return transition(state, next, true);
   }
   if (!isDraftNavigationInput(action))
@@ -317,6 +369,27 @@ function uniqueImages(
     ids.add(image.id);
     return image;
   });
+}
+
+function sameImages(
+  left: readonly DraftImageRef[],
+  right: readonly DraftImageRef[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((image, index) => {
+      const other = right[index];
+      return (
+        image.id === other?.id &&
+        image.token === other.token &&
+        image.mimeType === other.mimeType &&
+        image.capturedAt === other.capturedAt &&
+        image.width === other.width &&
+        image.height === other.height &&
+        image.bytes === other.bytes
+      );
+    })
+  );
 }
 
 function uniqueIds(values: readonly string[]): readonly string[] {

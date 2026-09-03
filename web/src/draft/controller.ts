@@ -27,6 +27,10 @@ export class DraftController {
     storageStatus: "ready",
   };
   private generation = 0;
+  private hydratingGeneration: number | null = null;
+  private blockedGeneration: number | null = null;
+  private pendingActions: DraftAction[] = [];
+  private readonly dirtyRecords = new Set<string>();
   private cleanup = Promise.resolve();
 
   constructor(
@@ -49,71 +53,77 @@ export class DraftController {
     requestIds: readonly string[] = [],
   ): Promise<void> {
     const generation = ++this.generation;
-    const cached = this.records.get(draftKey(key));
+    this.blockedGeneration = null;
+    this.pendingActions = [];
+    const id = draftKey(key);
+    const cached = this.records.get(id);
     const session = createDraftSession(
       cached ?? createDraftRecord(key, this.clock()),
       requestIds,
     );
+    const needsPersist =
+      !!cached &&
+      (session.record.revision !== cached.revision ||
+        this.dirtyRecords.has(id));
     this.state = {
       current: { ...key },
       session,
-      storageStatus: cached ? "ready" : "loading",
+      storageStatus: cached && !needsPersist ? "ready" : "loading",
     };
-    const activationRevision = session.record.revision;
     this.publish();
     if (cached) {
-      this.records.set(draftKey(key), session.record);
-      if (session.record.revision !== cached.revision)
+      this.records.set(id, session.record);
+      if (needsPersist)
         await this.persist(
           { ...session.record, updatedAt: this.clock() },
           generation,
         );
       return;
     }
+    this.hydratingGeneration = generation;
     let loaded = false;
     try {
       const value = await this.storage.loadAgent(key);
       loaded = true;
-      if (
-        !this.isCurrent(key, generation) ||
-        this.state.session?.record.revision !== activationRevision
-      )
-        return;
-      const currentSession = this.state.session;
+      if (!this.isCurrent(key, generation)) return;
+      const currentSession = this.state.session!;
       const record =
         value === null
           ? createDraftRecord(key, this.clock())
           : validateDraftRecord(value, key);
-      const restoredRecord = createDraftSession(
-        record,
-        currentSession.requestIds,
-      );
-      const restored = {
-        ...restoredRecord,
+      let restored = createDraftSession(record, requestIds);
+      for (const action of this.pendingActions)
+        restored = reduceDraft(restored, action).state;
+      restored = {
+        ...restored,
         transient: currentSession.transient,
-        handledInteractionIds: currentSession.handledInteractionIds,
       };
-      this.records.set(draftKey(key), restored.record);
+      this.pendingActions = [];
+      this.hydratingGeneration = null;
+      const changed = restored.record.revision !== record.revision;
+      const restoredRecord = changed
+        ? { ...restored.record, updatedAt: this.clock() }
+        : restored.record;
+      restored = { ...restored, record: restoredRecord };
+      this.records.set(draftKey(key), restoredRecord);
       this.state = {
         current: { ...key },
         session: restored,
-        storageStatus: "ready",
+        storageStatus: changed ? "loading" : "ready",
       };
       this.publish();
-      if (restored.record.revision !== record.revision)
-        await this.persist(restored.record, generation);
+      if (changed) await this.persist(restoredRecord, generation);
     } catch {
       if (!this.isCurrent(key, generation)) return;
-      const record = createDraftRecord(key, this.clock());
-      this.records.set(draftKey(key), record);
-      this.state = {
-        current: { ...key },
-        session: createDraftSession(record, requestIds),
-        storageStatus: "error",
-      };
+      this.pendingActions = [];
+      this.hydratingGeneration = null;
+      if (!loaded) this.blockedGeneration = generation;
+      this.state = { ...this.state, storageStatus: "error" };
       this.publish();
       if (loaded)
         try {
+          const record = this.state.session!.record;
+          this.records.set(draftKey(key), record);
           await this.storage.deleteAgent(key);
           await this.storage.putAgent(record);
         } catch {
@@ -124,6 +134,9 @@ export class DraftController {
 
   deactivate(): void {
     this.generation++;
+    this.hydratingGeneration = null;
+    this.blockedGeneration = null;
+    this.pendingActions = [];
     this.state = { current: null, session: null, storageStatus: "ready" };
     this.publish();
   }
@@ -150,30 +163,28 @@ export class DraftController {
   replaceText(text: string): Promise<void> {
     if (typeof text !== "string")
       return Promise.reject(new Error("Invalid Draft text"));
-    return this.mutateRecord((record) => ({ ...record, text }));
+    return this.transition({ type: "replace-text", text }).then(() => {});
   }
 
   setTextCursor(textOffset: number): Promise<void> {
-    return this.mutateRecord((record) => ({
-      ...record,
-      cursors: { ...record.cursors, textOffset },
-    }));
+    if (!Number.isSafeInteger(textOffset))
+      return Promise.reject(new Error("Invalid Draft text cursor"));
+    return this.transition({ type: "set-text-cursor", textOffset }).then(
+      () => {},
+    );
   }
 
   appendImageRefs(images: readonly DraftImageRef[]): Promise<void> {
-    const present = this.requireSession().record.images;
     return this.transition({
-      type: "set-images",
-      images: [...present, ...images],
+      type: "append-images",
+      images,
     }).then(() => {});
   }
 
   removeImageRefs(imageIds: readonly string[]): Promise<void> {
-    const removed = new Set(imageIds);
-    const present = this.requireSession().record.images;
     return this.transition({
-      type: "set-images",
-      images: present.filter(({ id }) => !removed.has(id)),
+      type: "remove-images",
+      imageIds,
     }).then(() => {});
   }
 
@@ -227,7 +238,11 @@ export class DraftController {
 
   dispose(): void {
     this.generation++;
+    this.hydratingGeneration = null;
+    this.blockedGeneration = null;
+    this.pendingActions = [];
     this.records.clear();
+    this.dirtyRecords.clear();
     this.listeners.clear();
     this.state = { current: null, session: null, storageStatus: "ready" };
   }
@@ -235,12 +250,29 @@ export class DraftController {
   private async transition(action: DraftAction) {
     const session = this.requireSession();
     const result = reduceDraft(session, action);
+    if (this.hydratingGeneration === this.generation) {
+      this.pendingActions.push(action);
+      if (result.state !== session) {
+        this.state = { ...this.state, session: result.state };
+        this.publish();
+      }
+      return result;
+    }
+    if (this.blockedGeneration === this.generation) {
+      if (result.state !== session) {
+        this.state = { ...this.state, session: result.state };
+        this.publish();
+      }
+      return result;
+    }
     if (result.state !== session) {
       const record =
         result.effect === "persist"
           ? { ...result.state.record, updatedAt: this.clock() }
           : result.state.record;
       this.state = { ...this.state, session: { ...result.state, record } };
+      if (result.effect === "persist")
+        this.state = { ...this.state, storageStatus: "loading" };
       this.records.set(draftKey(record.key), record);
       this.publish();
       if (result.effect === "persist")
@@ -249,45 +281,40 @@ export class DraftController {
     return result;
   }
 
-  private mutateRecord(
-    change: (record: DraftRecord) => DraftRecord,
-  ): Promise<void> {
-    const session = this.requireSession();
-    const changed = validateDraftRecord(
-      change(session.record),
-      session.record.key,
-    );
-    if (
-      changed.text === session.record.text &&
-      changed.cursors.textOffset === session.record.cursors.textOffset
-    )
-      return Promise.resolve();
-    const record = {
-      ...changed,
-      revision: session.record.revision + 1,
-      updatedAt: this.clock(),
-    };
-    this.state = { ...this.state, session: { ...session, record } };
-    this.records.set(draftKey(record.key), record);
-    this.publish();
-    return this.persist(record, this.generation);
-  }
-
   private async persist(
     record: DraftRecord,
     generation: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
-      await this.storage.putAgent(record);
-      if (this.isCurrent(record.key, generation)) {
-        this.state = { ...this.state, storageStatus: "ready" };
+      const written = await this.storage.putAgent(record);
+      const id = draftKey(record.key);
+      if (written && this.records.get(id)?.revision === record.revision)
+        this.dirtyRecords.delete(id);
+      if (
+        this.isCurrent(record.key, generation) &&
+        this.state.session?.record.revision === record.revision
+      ) {
+        if (!written && this.records.get(id)?.revision === record.revision)
+          this.records.delete(id);
+        if (!written) this.blockedGeneration = generation;
+        this.state = {
+          ...this.state,
+          storageStatus: written ? "ready" : "error",
+        };
         this.publish();
       }
+      return written;
     } catch {
-      if (this.isCurrent(record.key, generation)) {
+      if (this.records.get(draftKey(record.key))?.revision === record.revision)
+        this.dirtyRecords.add(draftKey(record.key));
+      if (
+        this.isCurrent(record.key, generation) &&
+        this.state.session?.record.revision === record.revision
+      ) {
         this.state = { ...this.state, storageStatus: "error" };
         this.publish();
       }
+      return false;
     }
   }
 
