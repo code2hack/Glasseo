@@ -3,6 +3,8 @@ import test from "node:test";
 import { ConfigController } from "../src/config/controller";
 import { HOSTS_SECTION_ID, rowId } from "../src/config/project";
 import { ConfigDestinationBody } from "../src/config/view";
+import { HidConfigHarness } from "../src/config/hid/harness";
+import { HidConfigSection } from "../src/config/hid/section";
 import {
   CONFIG_UI_VERSION,
   type ConfigRow,
@@ -110,6 +112,84 @@ test("provider Host fold state, glyph, aria, and children update together after 
   assert.equal(host.getAttribute("aria-expanded"), "true");
   assert.equal(hasRowWithLabel(list, "Online"), true);
   view.dispose();
+  controller.dispose();
+});
+
+test("Config view renders HID capture feedback and reset confirmation focus", async () => {
+  installDom();
+  const harness = new HidConfigHarness();
+  const section = new HidConfigSection(harness.controller);
+  const controller = new ConfigController(
+    new EmptyDirectory(),
+    memoryStorage,
+    () => false,
+    undefined,
+    [section],
+  );
+  const root = new FakeElement("main") as unknown as HTMLElement;
+  const view = new ConfigDestinationBody(controller);
+  view.mount(root);
+  const list = root.children[0]!.children[0]! as unknown as FakeElement;
+
+  view.handleInput(input("DOWN", 1));
+  view.handleInput(input("DOWN", 2));
+  view.handleInput(input("DOWN", 3));
+  view.handleInput(input("PRIMARY", 4));
+  await tick();
+  assert.ok(rowWithLabel(list, "HID Keys"));
+  for (const control of [
+    "PRIMARY",
+    "SECONDARY",
+    "COMMAND",
+    "LEFT",
+    "RIGHT",
+    "UP",
+    "DOWN",
+  ])
+    assert.ok(rowWithLabel(list, control));
+  assert.ok(rowWithLabel(list, "Reset HID bindings"));
+
+  view.handleInput(input("DOWN", 5));
+  view.handleInput(input("PRIMARY", 6));
+  await tick();
+  assert.deepEqual(harness.commands[0], {
+    type: "hid-binding-capture-start",
+    control: "PRIMARY",
+    requestId: "hid_1",
+  });
+  harness.receive({
+    type: "hid-binding-capture-state",
+    requestId: "hid_1",
+    control: "PRIMARY",
+    phase: "awaiting-down",
+    revision: 0,
+    candidateLabel: null,
+    error: null,
+  });
+  await tick();
+  assert.equal(
+    rowWithLabel(list, "PRIMARY").children[2]?.textContent,
+    "awaiting down",
+  );
+
+  for (let i = 0; i < 7; i++) view.handleInput(input("DOWN", 7 + i));
+  view.handleInput(input("PRIMARY", 14));
+  await tick();
+  assert.ok(rowWithLabel(list, "Cancel reset"));
+  assert.ok(rowWithLabel(list, "Confirm reset"));
+  assert.equal(
+    list.children.find((row) => row.className.includes("focused"))?.children[1]
+      ?.textContent,
+    "Cancel reset",
+  );
+
+  view.handleInput(input("DOWN", 15));
+  view.handleInput(input("PRIMARY", 16));
+  await tick();
+  assert.deepEqual(harness.commands[1], {
+    type: "hid-bindings-reset",
+    requestId: "hid_2",
+  });
   controller.dispose();
 });
 
@@ -245,4 +325,8 @@ function input(
     interactionId,
     timeMillis: interactionId,
   };
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }

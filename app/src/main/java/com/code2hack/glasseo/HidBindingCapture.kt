@@ -133,6 +133,14 @@ class HidBindingCapture(
         return snapshot
     }
 
+    fun clearCompleted(): HidBindingCaptureSnapshot {
+        if (!isActive) {
+            press = null
+            snapshot = idle()
+        }
+        return snapshot
+    }
+
     private fun finish(
         phase: HidBindingCapturePhase,
         revision: Long = store.profile.revision,

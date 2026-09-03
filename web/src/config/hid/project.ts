@@ -4,9 +4,15 @@ import type { HidConfigState } from "./controller";
 export const hidControlRowId = (control: HidControl) =>
   `hid-control:${control}` as const;
 export const HID_RESET_ROW_ID = "hid-reset" as const;
+export const HID_RESET_CANCEL_ROW_ID = "hid-reset-cancel" as const;
+export const HID_RESET_CONFIRM_ROW_ID = "hid-reset-confirm" as const;
 
 export type HidConfigRow = Readonly<{
-  id: ReturnType<typeof hidControlRowId> | typeof HID_RESET_ROW_ID;
+  id:
+    | ReturnType<typeof hidControlRowId>
+    | typeof HID_RESET_ROW_ID
+    | typeof HID_RESET_CANCEL_ROW_ID
+    | typeof HID_RESET_CONFIRM_ROW_ID;
   label: string;
   detail: string;
   control: HidControl | null;
@@ -31,11 +37,28 @@ export function projectHidConfig(
           : "Unbound";
       return { id: hidControlRowId(control), label: control, detail, control };
     }),
-    {
-      id: HID_RESET_ROW_ID,
-      label: "Reset HID bindings",
-      detail: state.resetConfirmation ? "Cancel · Confirm reset" : "",
-      control: null,
-    },
+    ...(state.resetConfirmation
+      ? [
+          {
+            id: HID_RESET_CANCEL_ROW_ID,
+            label: "Cancel reset",
+            detail: "",
+            control: null,
+          },
+          {
+            id: HID_RESET_CONFIRM_ROW_ID,
+            label: "Confirm reset",
+            detail: "",
+            control: null,
+          },
+        ]
+      : [
+          {
+            id: HID_RESET_ROW_ID,
+            label: "Reset HID bindings",
+            detail: "",
+            control: null,
+          },
+        ]),
   ];
 }

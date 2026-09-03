@@ -3,10 +3,14 @@ import test from "node:test";
 import { decodeHidMessage } from "../src/config/hid/bridge";
 import { HidConfigHarness } from "../src/config/hid/harness";
 import {
+  HID_RESET_CANCEL_ROW_ID,
+  HID_RESET_CONFIRM_ROW_ID,
   HID_RESET_ROW_ID,
   hidControlRowId,
   projectHidConfig,
 } from "../src/config/hid/project";
+import { HidConfigSection } from "../src/config/hid/section";
+import { HID_KEYS_SECTION_ID } from "../src/config/project";
 import {
   hidControls,
   type HidBindingsStateMessage,
@@ -96,6 +100,76 @@ test("throwing subscribers cannot block later HID subscribers", () => {
   harness.receive(bindingsState(1));
 
   assert.equal(calls, 2);
+});
+
+test("Config section exposes stable rows, bind actions, and reset confirmation focus", () => {
+  const harness = new HidConfigHarness();
+  const section = new HidConfigSection(harness.controller);
+
+  const initial = section.rows(new Set());
+  assert.deepEqual(
+    initial.map(({ id }) => id),
+    [...hidControls.map(hidControlRowId), HID_RESET_ROW_ID],
+  );
+  assert.deepEqual(initial[0]?.action, {
+    sectionId: HID_KEYS_SECTION_ID,
+    type: "hid-bind",
+    targetId: "PRIMARY",
+  });
+  assert.deepEqual(initial[7]?.action, {
+    sectionId: HID_KEYS_SECTION_ID,
+    type: "hid-reset",
+    targetId: null,
+  });
+
+  const focus = section.activate(
+    { sectionId: HID_KEYS_SECTION_ID, type: "hid-reset", targetId: null },
+    1,
+  );
+  assert.deepEqual(focus, { focusRowId: HID_RESET_CANCEL_ROW_ID });
+  const confirming = section.rows(new Set());
+  assert.deepEqual(confirming.map(({ id }) => id).slice(-2), [
+    HID_RESET_CANCEL_ROW_ID,
+    HID_RESET_CONFIRM_ROW_ID,
+  ]);
+
+  section.activate(
+    {
+      sectionId: HID_KEYS_SECTION_ID,
+      type: "hid-reset-confirm",
+      targetId: null,
+    },
+    2,
+  );
+  assert.deepEqual(harness.commands[0], {
+    type: "hid-bindings-reset",
+    requestId: "hid_1",
+  });
+});
+
+test("Config section forwards duplicate feedback without displacing prior rows", () => {
+  const harness = new HidConfigHarness();
+  const section = new HidConfigSection(harness.controller);
+  section.activate(
+    { sectionId: HID_KEYS_SECTION_ID, type: "hid-bind", targetId: "PRIMARY" },
+    1,
+  );
+  harness.receive(
+    capture("hid_1", "PRIMARY", "duplicate", 0, "duplicate_binding"),
+  );
+  const rows = section.rows(new Set());
+  assert.equal(rows[0]?.detail, "duplicate_binding");
+  assert.deepEqual(
+    rows.slice(1, 7).map(({ id }) => id),
+    [
+      hidControlRowId("SECONDARY"),
+      hidControlRowId("COMMAND"),
+      hidControlRowId("LEFT"),
+      hidControlRowId("RIGHT"),
+      hidControlRowId("UP"),
+      hidControlRowId("DOWN"),
+    ],
+  );
 });
 
 function bindingsState(

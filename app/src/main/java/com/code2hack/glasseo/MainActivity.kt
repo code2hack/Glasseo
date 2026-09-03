@@ -62,6 +62,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     }
     private val finishBuiltInCapture = Runnable { finalizeBuiltInAttempt() }
     private val externalDevices = mutableSetOf<Int>()
+    private val builtInInput = BuiltInInputTracker()
     private var builtInCapture: InputCapture? = null
     private var builtInFinalizerToken: QualificationFinalizerToken? = null
     private var hidAttemptReceiverRegistered = false
@@ -124,6 +125,16 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                 abortAttempted = abortAttempted || observation.abortAttempted
                 scheduleBuiltInFinish()
             }
+            return@observer
+        }
+        if (session == null && glasseoApplication.hidQualificationFlow == null &&
+            observation.action in setOf(
+                BuiltInInputTracker.ACTION_SPRITE_BUTTON_UP,
+                BuiltInInputTracker.ACTION_SPRITE_BUTTON_LONG_PRESS,
+            )
+        ) {
+            runBuiltInBroadcast(observation)
+            trace("built-in-command-broadcast", observation.action)
         }
     }
     private var webReady = false
@@ -157,6 +168,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             hidAttemptReceiverRegistered = true
         }
         glasseoApplication.observeOrderedBroadcasts(orderedBroadcastObserver)
+        glasseoApplication.hidBindingCapture.clearCompleted()
         qualificationSession?.let { session ->
             session.suspendCapture()
         }
@@ -268,24 +280,9 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             }
             return true
         }
-        if (source == PhysicalSource.HID && recordedHid != null && glasseoApplication.hidBindingCapture.isActive) {
-            val snapshot = glasseoApplication.hidBindingCapture.handle(recordedHid.first)
-            recordHidDecision(recordedHid.second.sequence, "capture:${snapshot.phase.name.lowercase()}")
-            postHidBindingCaptureState()
-            if (!glasseoApplication.hidBindingCapture.isActive) postHidBindingsState()
-            scheduleHidBindingCaptureTimeout()
-            return true
-        }
-        val control = when (source) {
-            PhysicalSource.HID -> glasseoApplication.hidBindingStore.controlFor(event.hidIdentity())
-            PhysicalSource.BUILT_IN -> null
-            null -> null
-        }
-        if (source != null && control != null && handleKey(event, source, control)) {
-            recordedHid?.let { recordHidDecision(it.second.sequence, "accepted:semantic-${control.name}") }
-            return true
-        }
-        recordedHid?.let { recordHidDecision(it.second.sequence, "rejected:no-active-HID-binding") }
+        if (source == PhysicalSource.BUILT_IN) return handleBuiltInKey(event)
+        if (source == PhysicalSource.HID && recordedHid != null)
+            return handleHidInput(recordedHid.first, recordedHid.second.sequence)
         return if (source == PhysicalSource.HID || consumeUnmapped) true else super.dispatchKeyEvent(event)
     }
 
@@ -474,19 +471,65 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         }
     }
 
-    private fun handleKey(event: KeyEvent, source: PhysicalSource, control: SemanticControl): Boolean {
-        val action = when (event.action) {
-            KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) PhysicalAction.DOWN else PhysicalAction.REPEAT
-            KeyEvent.ACTION_UP -> if (event.isCanceled) PhysicalAction.CANCEL else PhysicalAction.UP
-            else -> return false
+    private fun handleBuiltInKey(event: KeyEvent): Boolean {
+        val action = event.physicalAction() ?: return if (consumeUnmapped) true else super.dispatchKeyEvent(event)
+        val events = builtInInput.handleKey(event.keyCode, action, event.eventTime)
+        events.forEach { builtIn ->
+            handlePhysical(
+                PhysicalOwner(PhysicalSource.BUILT_IN, event.deviceId, BuiltInInputTracker.OWNER_CODE),
+                builtIn.control,
+                builtIn.action,
+                builtIn.timeMillis,
+            )
         }
-        emit(
-            inputController.handle(
-                PhysicalInput(PhysicalOwner(source, event.deviceId, event.keyCode), control, action, event.eventTime),
-            ),
-        )
-        scheduleDeadline()
+        if (events.isNotEmpty()) scheduleDeadline()
+        return events.isNotEmpty() || if (consumeUnmapped) true else super.dispatchKeyEvent(event)
+    }
+
+    private fun handleHidInput(input: HidRawInput, sequence: Long): Boolean {
+        if (glasseoApplication.hidBindingCapture.isActive) {
+            val snapshot = glasseoApplication.hidBindingCapture.handle(input)
+            recordHidDecision(sequence, "capture:${snapshot.phase.name.lowercase()}")
+            postHidBindingCaptureState()
+            if (!glasseoApplication.hidBindingCapture.isActive) {
+                postHidBindingsState()
+                // A committed/rejected profile can invalidate an in-flight HID press.
+                emit(inputController.cancelSource(PhysicalSource.HID, input.deviceId, input.eventTimeMillis))
+                scheduleDeadline()
+            }
+            scheduleHidBindingCaptureTimeout()
+            return true
+        }
+        val control = glasseoApplication.hidBindingStore.controlFor(input.identity)
+        if (control != null) {
+            handlePhysical(
+                PhysicalOwner(PhysicalSource.HID, input.deviceId, input.identity.keyCode),
+                control,
+                input.action,
+                input.eventTimeMillis,
+            )
+            recordHidDecision(sequence, "accepted:semantic-${control.name}")
+            return true
+        }
+        recordHidDecision(sequence, "rejected:no-active-HID-binding")
         return true
+    }
+
+    private fun handlePhysical(owner: PhysicalOwner, control: SemanticControl, action: PhysicalAction, timeMillis: Long) {
+        emit(inputController.handle(PhysicalInput(owner, control, action, timeMillis)))
+    }
+
+    private fun runBuiltInBroadcast(observation: OrderedBroadcastObservation) {
+        val events = builtInInput.handleBroadcast(observation.action, SystemClock.uptimeMillis())
+        events.forEach { builtIn ->
+            handlePhysical(
+                PhysicalOwner(PhysicalSource.BUILT_IN, 0, BuiltInInputTracker.OWNER_CODE),
+                builtIn.control,
+                builtIn.action,
+                builtIn.timeMillis,
+            )
+        }
+        if (events.isNotEmpty()) scheduleDeadline()
     }
 
     private fun startHidBindingCapture(message: BridgeMessage.HidBindingCaptureStart) {
@@ -936,6 +979,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         scheduleDeadline()
     }
 
+    internal fun advanceInputForTest(timeMillis: Long) {
+        emit(inputController.advance(timeMillis))
+    }
+
     internal fun startQualificationForTest(step: QualificationStep) {
         clearQualificationCheckpoint()
         glasseoApplication.startQualification(QualificationMode.BUILT_IN, step.ordinal, qualificationPauseTarget)
@@ -956,6 +1003,46 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         postHidInputTrace()
         handleHidQualificationFlow(input, receipt.sequence)
     }
+
+    internal fun submitHidBindingInputForTest(input: HidRawInput) {
+        val receipt = glasseoApplication.hidInputTrace.recordRaw(input)
+        traceHidRawReceipt(receipt)
+        postHidInputTrace()
+        handleHidInput(input, receipt.sequence)
+    }
+
+    internal fun startHidBindingCaptureForTest(control: SemanticControl, requestId: String = "test_1") {
+        startHidBindingCapture(BridgeMessage.HidBindingCaptureStart(control, requestId))
+    }
+
+    internal fun resetHidBindingsForTest(requestId: String = "test_reset") {
+        resetHidBindings(requestId)
+    }
+
+    internal fun submitBuiltInKeyForTest(keyCode: Int, action: PhysicalAction, timeMillis: Long) {
+        builtInInput.handleKey(keyCode, action, timeMillis).forEach { builtIn ->
+            handlePhysical(
+                PhysicalOwner(PhysicalSource.BUILT_IN, 0, BuiltInInputTracker.OWNER_CODE),
+                builtIn.control,
+                builtIn.action,
+                builtIn.timeMillis,
+            )
+        }
+        scheduleDeadline()
+    }
+
+    internal fun submitBuiltInBroadcastForTest(action: String, timeMillis: Long = SystemClock.uptimeMillis()) {
+        runBuiltInBroadcast(OrderedBroadcastObservation(action, 0, true, true, true, null))
+    }
+
+    internal fun removeHidInputDeviceForTest(deviceId: Int) {
+        externalDevices += deviceId
+        onInputDeviceRemoved(deviceId)
+    }
+
+    internal fun hidProfileForTest(): HidBindingProfile = glasseoApplication.hidBindingStore.profile
+
+    internal fun hidCaptureSnapshotForTest(): HidBindingCaptureSnapshot = glasseoApplication.hidBindingCapture.snapshot
 
     internal fun submitQualificationForTest(operation: QualificationOperation): Boolean {
         val session = qualificationSession ?: return false
@@ -1014,6 +1101,8 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     internal fun scannerActiveForTest(): Boolean = qrScannerController.isActive
 
+    internal fun webIsReadyForTest(): Boolean = webReady
+
     internal fun postScannerEventForTest(event: QrScannerEvent) {
         postNative(NativeQrScannerMessage.encode(event))
     }
@@ -1027,6 +1116,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (!::inputController.isInitialized) return
         val now = SystemClock.uptimeMillis()
         emit(inputController.cancelAll(now))
+        builtInInput.cancel()
         cancelHidBindingCapture(reason = reason)
         val session = qualificationSession
         if (session != null) {
