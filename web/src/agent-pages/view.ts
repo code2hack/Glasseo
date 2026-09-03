@@ -15,6 +15,7 @@ import {
   type TimelineDiagnostics,
 } from "../timeline/view";
 import { diagnosticHash } from "../app/hash";
+import type { ConfigDiagnostics } from "../config/view";
 
 export type HeaderMetadataSource = Pick<
   AgentHeaderMetadataController,
@@ -52,6 +53,7 @@ declare global {
       stableDom: boolean;
       rendererLossCount: number;
       timeline: TimelineDiagnostics | null;
+      config: ConfigDiagnostics | null;
     }>;
   }
 }
@@ -193,11 +195,17 @@ export class AgentShellView {
         destination.kind === "agent" && destination.pane === "timeline"
           ? (this.timelineBody?.diagnostics() ?? null)
           : null,
+      config:
+        destination.kind === "config"
+          ? (this.destinationHost.diagnostics() as ConfigDiagnostics | null)
+          : null,
     };
   }
 
   handleInput(input: import("../native/semanticInput").SemanticInput): boolean {
-    return this.destinationHost.handleInput(input);
+    const handled = this.destinationHost.handleInput(input);
+    if (handled) this.render();
+    return handled;
   }
 }
 

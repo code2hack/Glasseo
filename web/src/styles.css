@@ -63,11 +63,74 @@ body,
   overflow: hidden;
 }
 
-#agent-body[data-destination="draft"],
-#agent-body[data-destination="config"] {
+#agent-body[data-destination="draft"] {
   padding: 24px;
   place-content: center;
   text-align: center;
+}
+
+.config-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  padding: 10px 12px 24px;
+  scrollbar-width: none;
+}
+
+.config-list {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.config-row {
+  display: grid;
+  min-width: 0;
+  min-height: 42px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px calc(8px + var(--config-depth) * 14px);
+  border: 1px solid transparent;
+  background: #080b0d;
+}
+
+.config-row.focused {
+  border-color: #fff;
+}
+
+.config-section {
+  min-height: 48px;
+  background: #10161a;
+  font-weight: 700;
+}
+
+.config-fold {
+  color: #8ed6ff;
+  text-align: center;
+}
+
+.config-label,
+.config-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-label {
+  font-size: 18px;
+}
+
+.config-detail {
+  max-width: 132px;
+  color: #9cabb4;
+  font-size: 13px;
+}
+
+.config-empty,
+.config-placeholder {
+  color: #b8c4cc;
 }
 
 h1,

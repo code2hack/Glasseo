@@ -152,6 +152,22 @@ export function reduceAgentPager(
   };
 }
 
+export function openAgentFromConfig(
+  state: AgentPagerState,
+  directory: GlobalAgentDirectorySnapshot,
+  key: AgentKey,
+): PagerTransition {
+  if (state.destination.kind !== "config" || !eligible(directory, key))
+    return { state, select: null };
+  return {
+    state: {
+      ...state,
+      destination: { kind: "agent", key, pane: "timeline" },
+    },
+    select: key,
+  };
+}
+
 export class AgentPagerController {
   private stateValue: AgentPagerState;
   private readonly listeners = new Set<(state: AgentPagerState) => void>();
@@ -185,6 +201,22 @@ export class AgentPagerController {
     this.stateValue = transition.state;
     if (transition.select) this.directory.selectAgent(transition.select);
     else this.publish();
+  }
+
+  openAgent(key: AgentKey): boolean {
+    const transition = openAgentFromConfig(
+      this.stateValue,
+      this.directory.snapshot(),
+      key,
+    );
+    if (!transition.select) return false;
+    const previous = this.stateValue;
+    this.stateValue = transition.state;
+    if (!this.directory.selectAgent(transition.select)) {
+      this.stateValue = previous;
+      return false;
+    }
+    return true;
   }
 
   dispose(): void {

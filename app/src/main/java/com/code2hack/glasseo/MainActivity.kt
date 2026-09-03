@@ -838,6 +838,11 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
 
     internal fun emitForTest(event: SemanticInteraction) = emit(listOf(event))
 
+    internal fun submitPhysicalInputForTest(input: PhysicalInput) {
+        emit(inputController.handle(input))
+        scheduleDeadline()
+    }
+
     internal fun startQualificationForTest(step: QualificationStep) {
         clearQualificationCheckpoint()
         glasseoApplication.startQualification(QualificationMode.BUILT_IN, step.ordinal, qualificationPauseTarget)
