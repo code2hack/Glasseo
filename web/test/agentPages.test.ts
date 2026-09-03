@@ -690,6 +690,11 @@ function runtimeFixture(
       entries: [],
       pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
     }),
+    getTimeline: async () => {
+      throw new Error("unused timeline fixture");
+    },
+    setTimelineSubscription: async () => {},
+    subscribeTimeline: () => () => {},
     subscribeDirectory: () => () => {},
   };
 }

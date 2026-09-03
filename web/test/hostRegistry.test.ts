@@ -390,6 +390,17 @@ test("directory runtime leases fence reconnect, failed removal, and removal", as
   });
   await registry.restore();
   const runtime = factory.runtimes[0]!;
+  const timelineMethods: string[] = [];
+  const unsubscribeLease = registry.subscribeRuntimeLeases(([lease]) => {
+    if (lease)
+      timelineMethods.push(
+        typeof lease.runtime.getTimeline,
+        typeof lease.runtime.setTimelineSubscription,
+        typeof lease.runtime.subscribeTimeline,
+      );
+  });
+  unsubscribeLease();
+  assert.deepEqual(timelineMethods, ["function", "function", "function"]);
   const first = observed.at(-1)!;
   assert.deepEqual(first && first.slice(1), [1, "online"]);
 
@@ -529,6 +540,13 @@ class FakeRuntime implements HostRuntime {
       fetchedAt: "2026-09-03T00:00:00Z",
       providers: [],
     };
+  }
+  async getTimeline() {
+    throw new Error("unused timeline fixture");
+  }
+  async setTimelineSubscription() {}
+  subscribeTimeline() {
+    return () => {};
   }
   subscribeDirectory(_listener: (event: PaseoDirectoryEvent) => void) {
     void _listener;

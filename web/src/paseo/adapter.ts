@@ -60,6 +60,16 @@ export type PaseoDirectoryEvent =
       agentId: string;
       archivedAt: string;
     };
+export type PaseoTimelineEvent =
+  | ({ type: "agent_stream" } & Omit<
+      Extract<PaseoEvent, { type: "agent_stream" }>,
+      "type"
+    >)
+  | {
+      type: "agent.timeline.replacement";
+      agentId: string;
+      epoch: string;
+    };
 type Inbound<T extends SessionInboundMessage["type"]> = Extract<
   SessionInboundMessage,
   { type: T }
@@ -83,6 +93,7 @@ export type PaseoAgent = {
   project: PaseoAgentResponse["project"];
 } | null;
 export type PaseoTimeline = Outbound<"fetch_agent_timeline_response">;
+export type PaseoTimelineEntry = PaseoTimeline["entries"][number];
 export type PaseoUsage = Outbound<"provider.usage.list.response">;
 export type PaseoWorkspacesOptions = Omit<
   Inbound<"fetch_workspaces_request">,
@@ -136,6 +147,7 @@ export interface PaseoRuntime {
   subscribeDirectory(
     listener: (event: PaseoDirectoryEvent) => void,
   ): () => void;
+  subscribeTimeline(listener: (event: PaseoTimelineEvent) => void): () => void;
   listProjects(): Promise<PaseoProjects>;
   listWorkspaces(options?: PaseoWorkspacesOptions): Promise<PaseoWorkspaces>;
   listAgents(options?: PaseoAgentsOptions): Promise<PaseoAgents>;
@@ -260,6 +272,21 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
     } catch {
       try {
         options.log?.("warn", "Paseo directory subscriber failed");
+      } catch {
+        // Subscriber and logging failures never affect connection ownership.
+      }
+    }
+  }
+
+  function notifyTimelineListener(
+    listener: (event: PaseoTimelineEvent) => void,
+    event: PaseoTimelineEvent,
+  ): void {
+    try {
+      listener(event);
+    } catch {
+      try {
+        options.log?.("warn", "Paseo timeline subscriber failed");
       } catch {
         // Subscriber and logging failures never affect connection ownership.
       }
@@ -413,6 +440,40 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
             notifyDirectoryListener(listener, {
               type: "project.update",
               payload: message.payload,
+            });
+        }),
+      ];
+      const unsubscribe = () => {
+        subscriptions.delete(unsubscribe);
+        for (const stop of unsubscribes) stop();
+      };
+      subscriptions.add(unsubscribe);
+      return unsubscribe;
+    },
+    subscribeTimeline(listener) {
+      if (disposed) return () => {};
+      const unsubscribes = [
+        client.on("agent_stream", (message) => {
+          if (host)
+            notifyTimelineListener(listener, {
+              type: "agent_stream",
+              agentId: message.payload.agentId,
+              event: message.payload.event,
+              timestamp: message.payload.timestamp,
+              ...(message.payload.seq === undefined
+                ? {}
+                : { seq: message.payload.seq }),
+              ...(message.payload.epoch === undefined
+                ? {}
+                : { epoch: message.payload.epoch }),
+            });
+        }),
+        client.on("agent.timeline.replacement", (message) => {
+          if (host)
+            notifyTimelineListener(listener, {
+              type: "agent.timeline.replacement",
+              agentId: message.payload.agentId,
+              epoch: message.payload.epoch,
             });
         }),
       ];

@@ -5,7 +5,11 @@ const outdir = "app/build/generated/web";
 await rm(outdir, { force: true, recursive: true });
 await mkdir(outdir, { recursive: true });
 await build({
-  entryPoints: ["web/src/main.ts", "web/src/styles.css"],
+  entryPoints: [
+    "web/src/main.ts",
+    "web/src/styles.css",
+    "web/src/timeline/acceptance-entry.ts",
+  ],
   bundle: true,
   conditions: ["node"],
   format: "iife",
@@ -14,3 +18,7 @@ await build({
   sourcemap: true,
 });
 await copyFile("web/index.html", `${outdir}/index.html`);
+await copyFile(
+  "web/timeline-acceptance.html",
+  `${outdir}/timeline-acceptance.html`,
+);

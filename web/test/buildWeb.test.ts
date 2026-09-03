@@ -19,5 +19,11 @@ test("Web build removes obsolete generated assets", async () => {
     "main.js.map",
     "styles.css",
     "styles.css.map",
+    "timeline",
+    "timeline-acceptance.html",
+  ]);
+  assert.deepEqual((await readdir(`${output}/timeline`)).sort(), [
+    "acceptance-entry.js",
+    "acceptance-entry.js.map",
   ]);
 });
