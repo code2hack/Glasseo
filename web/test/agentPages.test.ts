@@ -318,6 +318,127 @@ test("metadata controller fences reconnect completions by connection epoch", asy
   assert.equal(controller.snapshot()?.usage, "Weekly 73% remaining");
 });
 
+test("same-Agent directory revisions refresh metadata without moving the pager", async () => {
+  const selected = agent("alpha", "a", "2026-09-03T03:00:00Z");
+  const directory = new FakeDirectory(snapshot([selected], key(selected)));
+  const results = Array.from({ length: 4 }, () => deferred<PaseoAgent>());
+  let agentCalls = 0;
+  let usageCalls = 0;
+  const runtime = runtimeFixture(
+    () => results[agentCalls++].promise,
+    () => {
+      usageCalls++;
+      return Promise.resolve(usageFixture());
+    },
+  );
+  const metadata = new AgentHeaderMetadataController(
+    new FakeLeases([lease(runtime)]),
+    directory,
+  );
+  const pager = new AgentPagerController(directory);
+  await tick();
+
+  const timelineUpdate = agent("alpha", "a", "2026-09-03T04:00:00Z", {
+    model: "directory-new",
+    thinkingOptionId: "medium",
+    currentModeId: "default",
+    availableModes: [{ id: "default", label: "Default mode" }],
+  });
+  directory.emit(snapshot([timelineUpdate], key(timelineUpdate)));
+  assert.deepEqual(pager.snapshot().destination, {
+    kind: "agent",
+    key: key(selected),
+    pane: "timeline",
+  });
+  assert.equal(metadata.snapshot()?.model, null);
+  assert.equal(metadata.snapshot()?.usage, "Weekly 73% remaining");
+  assert.match(
+    projectAgentHeader(
+      directory.snapshot(),
+      key(timelineUpdate),
+      metadata.snapshot(),
+    )!.line2,
+    /directory-new · medium · Default mode · Weekly 73% remaining/,
+  );
+
+  results[0].resolve(paseoAgent("a", "stale-runtime"));
+  await tick();
+  assert.equal(metadata.snapshot()?.model, null);
+  results[1].resolve(paseoAgent("a", "fresh-runtime"));
+  await tick();
+  assert.equal(metadata.snapshot()?.model, "fresh-runtime");
+
+  pager.handle(input("COMMAND", "SHORT", 20));
+  const draftUpdate = {
+    ...timelineUpdate,
+    model: "directory-draft",
+    updatedAt: "2026-09-03T05:00:00Z",
+  };
+  directory.emit(snapshot([draftUpdate], key(draftUpdate)));
+  const draftDestination = pager.snapshot().destination;
+  assert.equal(
+    draftDestination.kind === "agent" && draftDestination.pane,
+    "draft",
+  );
+  assert.equal(metadata.snapshot()?.model, null);
+
+  pager.handle(input("COMMAND", "SHORT", 21));
+  pager.handle(input("COMMAND", "LONG", 22));
+  const configUpdate = {
+    ...draftUpdate,
+    model: "directory-config",
+    updatedAt: "2026-09-03T06:00:00Z",
+  };
+  directory.emit(snapshot([configUpdate], key(configUpdate)));
+  assert.deepEqual(pager.snapshot().destination, {
+    kind: "config",
+    returnTo: key(selected),
+  });
+  assert.equal(metadata.snapshot()?.model, null);
+
+  results[2].resolve(paseoAgent("a", "late-draft-runtime"));
+  results[3].resolve(paseoAgent("a", "fresh-config-runtime"));
+  await tick();
+  assert.equal(metadata.snapshot()?.model, "fresh-config-runtime");
+  assert.equal(agentCalls, 4);
+  assert.equal(usageCalls, 1);
+});
+
+test("same-source directory refresh retries rejected and unusable usage", async (t) => {
+  for (const failure of ["rejected", "unusable"] as const) {
+    await t.test(failure, async () => {
+      const selected = agent("alpha", "a", "2026-09-03T03:00:00Z");
+      const directory = new FakeDirectory(snapshot([selected], key(selected)));
+      let usageCalls = 0;
+      const runtime = runtimeFixture(
+        () => Promise.resolve(paseoAgent("a", "runtime-model")),
+        () => {
+          usageCalls++;
+          if (usageCalls > 1) return Promise.resolve(usageFixture());
+          return failure === "rejected"
+            ? Promise.reject(new Error("usage unavailable"))
+            : Promise.resolve({ ...usageFixture(), providers: [] });
+        },
+      );
+      const metadata = new AgentHeaderMetadataController(
+        new FakeLeases([lease(runtime)]),
+        directory,
+      );
+      await tick();
+      assert.equal(metadata.snapshot()?.usage, null);
+
+      const updated = {
+        ...selected,
+        updatedAt: "2026-09-03T04:00:00Z",
+      };
+      directory.emit(snapshot([updated], key(updated)));
+      await tick();
+      assert.equal(metadata.snapshot()?.usage, "Weekly 73% remaining");
+      assert.equal(usageCalls, 2);
+    });
+  }
+});
+
 class FakeDirectory implements AgentDirectorySource, MetadataDirectorySource {
   private listeners = new Set<(value: GlobalAgentDirectorySnapshot) => void>();
   readonly selections: AgentKey[] = [];

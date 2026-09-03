@@ -2,7 +2,7 @@ import type { PaseoAgent, PaseoUsage } from "../paseo/adapter";
 import type { HostRuntimeLease } from "../hosts/types";
 import type { HostRegistry } from "../hosts/registry";
 import type { DirectoryCoordinator } from "../directory/coordinator";
-import type { AgentKey, SourceToken } from "../directory/types";
+import type { AgentKey, DirectoryAgent, SourceToken } from "../directory/types";
 import type { AgentRuntimeMetadata } from "./header";
 
 export type MetadataLeaseSource = Pick<HostRegistry, "subscribeRuntimeLeases">;
@@ -10,6 +10,16 @@ export type MetadataDirectorySource = Pick<
   DirectoryCoordinator,
   "snapshot" | "subscribe"
 >;
+type MetadataTarget = {
+  key: AgentKey;
+  sourceToken: SourceToken;
+  agent: DirectoryAgent;
+};
+type UsageTarget = {
+  serverId: string;
+  provider: string;
+  sourceToken: SourceToken;
+};
 
 export class AgentHeaderMetadataController {
   private readonly listeners = new Set<
@@ -17,8 +27,10 @@ export class AgentHeaderMetadataController {
   >();
   private leases: readonly HostRuntimeLease[] = [];
   private metadata: AgentRuntimeMetadata | null = null;
-  private target: { key: AgentKey; sourceToken: SourceToken } | null = null;
-  private request = 0;
+  private target: MetadataTarget | null = null;
+  private usageTarget: UsageTarget | null = null;
+  private agentRequest = 0;
+  private usageRequest = 0;
   private revision = 0;
   private readonly unsubscribeLeases: () => void;
   private readonly unsubscribeDirectory: () => void;
@@ -50,16 +62,18 @@ export class AgentHeaderMetadataController {
     this.unsubscribeLeases();
     this.unsubscribeDirectory();
     this.target = null;
-    this.request++;
+    this.usageTarget = null;
+    this.agentRequest++;
+    this.usageRequest++;
     this.listeners.clear();
   }
 
   private refresh(): void {
     const snapshot = this.directory.snapshot();
     const key = snapshot.current;
-    const sourceToken = key
-      ? snapshot.hosts.get(key.serverId)?.sourceToken
-      : null;
+    const host = key ? snapshot.hosts.get(key.serverId) : null;
+    const sourceToken = host?.sourceToken;
+    const agent = key ? host?.agents.get(key.agentId) : null;
     const lease = key
       ? this.leases.find(
           (candidate) =>
@@ -68,31 +82,55 @@ export class AgentHeaderMetadataController {
             sameToken(candidate, sourceToken),
         )
       : null;
-    if (!key || !sourceToken || !lease) {
+    if (!key || !sourceToken || !agent || !lease) {
       if (this.target === null && this.metadata === null) return;
       this.target = null;
-      this.request++;
+      this.usageTarget = null;
+      this.agentRequest++;
+      this.usageRequest++;
       this.metadata = null;
       this.publish();
       return;
     }
-    if (sameTarget(this.target, key, sourceToken)) return;
-    this.target = { key, sourceToken };
-    const request = ++this.request;
-    this.metadata = emptyMetadata(key, sourceToken, ++this.revision);
-    this.publish();
-    void lease.runtime
-      .getAgent(key.agentId)
-      .then((agent) => this.applyAgent(request, agent))
-      .catch(() => undefined);
-    void lease.runtime
-      .listUsage()
-      .then((usage) => this.applyUsage(request, key, usage))
-      .catch(() => undefined);
+    const sameAgent = sameTarget(this.target, key, sourceToken, agent);
+    const reuseUsage = sameUsageTarget(
+      this.usageTarget,
+      key.serverId,
+      agent.provider,
+      sourceToken,
+    );
+    if (sameAgent && reuseUsage) return;
+    if (!sameAgent) {
+      const usage = reuseUsage ? (this.metadata?.usage ?? null) : null;
+      this.target = { key, sourceToken, agent };
+      const request = ++this.agentRequest;
+      this.metadata = {
+        ...emptyMetadata(key, sourceToken, ++this.revision),
+        usage,
+      };
+      this.publish();
+      void lease.runtime
+        .getAgent(key.agentId)
+        .then((agent) => this.applyAgent(request, agent))
+        .catch(() => undefined);
+    }
+    if (!reuseUsage) {
+      const usageTarget = {
+        serverId: key.serverId,
+        provider: agent.provider,
+        sourceToken,
+      };
+      this.usageTarget = usageTarget;
+      const usageRequest = ++this.usageRequest;
+      void lease.runtime
+        .listUsage()
+        .then((usage) => this.applyUsage(usageRequest, usageTarget, usage))
+        .catch(() => this.invalidateUsage(usageRequest, usageTarget));
+    }
   }
 
   private applyAgent(request: number, agent: PaseoAgent): void {
-    if (request !== this.request || !this.metadata) return;
+    if (request !== this.agentRequest || !this.metadata) return;
     const snapshot = projectAgentMetadata(agent);
     this.metadata = {
       ...this.metadata,
@@ -102,18 +140,46 @@ export class AgentHeaderMetadataController {
     this.publish();
   }
 
-  private applyUsage(request: number, key: AgentKey, usage: PaseoUsage): void {
-    if (request !== this.request || !this.metadata) return;
-    const provider = this.directory
-      .snapshot()
-      .hosts.get(key.serverId)
-      ?.agents.get(key.agentId)?.provider;
+  private applyUsage(
+    request: number,
+    target: UsageTarget,
+    usage: PaseoUsage,
+  ): void {
+    if (
+      request !== this.usageRequest ||
+      !this.metadata ||
+      !sameUsageTarget(
+        this.usageTarget,
+        target.serverId,
+        target.provider,
+        target.sourceToken,
+      )
+    )
+      return;
+    const formatted = formatProviderUsage(usage, target.provider);
+    if (!formatted) {
+      this.invalidateUsage(request, target);
+      return;
+    }
     this.metadata = {
       ...this.metadata,
-      usage: provider ? formatProviderUsage(usage, provider) : null,
+      usage: formatted,
       revision: ++this.revision,
     };
     this.publish();
+  }
+
+  private invalidateUsage(request: number, target: UsageTarget): void {
+    if (
+      request === this.usageRequest &&
+      sameUsageTarget(
+        this.usageTarget,
+        target.serverId,
+        target.provider,
+        target.sourceToken,
+      )
+    )
+      this.usageTarget = null;
   }
 
   private publish(): void {
@@ -220,13 +286,47 @@ function sameToken(
 }
 
 function sameTarget(
-  target: { key: AgentKey; sourceToken: SourceToken } | null,
+  target: MetadataTarget | null,
   key: AgentKey,
   sourceToken: SourceToken,
+  agent: DirectoryAgent,
 ): boolean {
   return (
     target?.key.serverId === key.serverId &&
     target.key.agentId === key.agentId &&
+    target.sourceToken.serverId === sourceToken.serverId &&
+    target.sourceToken.slotGeneration === sourceToken.slotGeneration &&
+    target.sourceToken.connectionEpoch === sourceToken.connectionEpoch &&
+    sameHeaderFacts(target.agent, agent)
+  );
+}
+
+function sameHeaderFacts(left: DirectoryAgent, right: DirectoryAgent): boolean {
+  return (
+    left.updatedAt === right.updatedAt &&
+    left.provider === right.provider &&
+    left.model === right.model &&
+    left.thinkingOptionId === right.thinkingOptionId &&
+    left.currentModeId === right.currentModeId &&
+    left.availableModes.length === right.availableModes.length &&
+    left.availableModes.every(
+      (mode, index) =>
+        mode.id === right.availableModes[index]?.id &&
+        mode.label === right.availableModes[index]?.label,
+    )
+  );
+}
+
+function sameUsageTarget(
+  target: UsageTarget | null,
+  serverId: string,
+  provider: string,
+  sourceToken: SourceToken,
+): boolean {
+  return (
+    target?.serverId === serverId &&
+    target.provider === provider &&
+    target.sourceToken.serverId === sourceToken.serverId &&
     target.sourceToken.slotGeneration === sourceToken.slotGeneration &&
     target.sourceToken.connectionEpoch === sourceToken.connectionEpoch
   );
