@@ -18,6 +18,10 @@ import type { TimelineStorage } from "../timeline/types";
 import { ConfigController } from "../config/controller";
 import { IndexedDbConfigStorage } from "../config/storage";
 import { ConfigDestinationBody } from "../config/view";
+import { DraftController } from "../draft/controller";
+import { bindDraftLifecycle } from "../draft/lifecycle";
+import { IndexedDbDraftStorage } from "../draft/storage";
+import { DraftDestinationBody } from "../draft/view";
 
 export function createTimelineComposition(
   directory: Pick<DirectoryCoordinator, "snapshot" | "subscribe">,
@@ -53,8 +57,20 @@ export async function bootstrap(): Promise<void> {
   const metadata = new AgentHeaderMetadataController(registry, directory);
   const timelineComposition = createTimelineComposition(directory, registry);
   const timeline = timelineComposition.coordinator;
+  const draft = new DraftController(new IndexedDbDraftStorage());
+  const disposeDraftLifecycle = bindDraftLifecycle(draft, directory, registry);
   const view = new AgentShellView(root, pager, directory, metadata, timeline, {
     config: () => new ConfigDestinationBody(config),
+    draft: () =>
+      new DraftDestinationBody(
+        draft,
+        (key) =>
+          directory
+            .snapshot()
+            .hosts.get(key.serverId)
+            ?.agents.get(key.agentId)
+            ?.pendingPermissions.map(({ id }) => id) ?? [],
+      ),
   });
   const inputRouter = new InputRouter(view, pager);
   view.render();
@@ -74,6 +90,8 @@ export async function bootstrap(): Promise<void> {
       disposeSemanticInput();
       disposeDiagnostics();
       view.dispose();
+      disposeDraftLifecycle();
+      draft.dispose();
       config.dispose();
       timelineComposition.dispose();
       metadata.dispose();

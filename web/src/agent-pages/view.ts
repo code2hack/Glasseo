@@ -16,6 +16,7 @@ import {
 } from "../timeline/view";
 import { diagnosticHash } from "../app/hash";
 import type { ConfigDiagnostics } from "../config/view";
+import type { DraftViewDiagnostics } from "../draft/view";
 
 export type HeaderMetadataSource = Pick<
   AgentHeaderMetadataController,
@@ -53,6 +54,7 @@ declare global {
       stableDom: boolean;
       rendererLossCount: number;
       timeline: TimelineDiagnostics | null;
+      draft: DraftViewDiagnostics | null;
       config: ConfigDiagnostics | null;
     }>;
   }
@@ -194,6 +196,10 @@ export class AgentShellView {
       timeline:
         destination.kind === "agent" && destination.pane === "timeline"
           ? (this.timelineBody?.diagnostics() ?? null)
+          : null,
+      draft:
+        destination.kind === "agent" && destination.pane === "draft"
+          ? (this.destinationHost.diagnostics() as DraftViewDiagnostics | null)
           : null,
       config:
         destination.kind === "config"

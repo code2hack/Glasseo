@@ -1,5 +1,6 @@
 import { sameAgentKey } from "../directory/normalize";
 import type { AgentKey } from "../directory/types";
+import type { SemanticInput } from "../native/semanticInput";
 import {
   DRAFT_SCHEMA_VERSION,
   type DraftAction,
@@ -98,10 +99,7 @@ export function reduceDraft(
     });
     return transition(state, next, true);
   }
-  if (
-    action.action !== "SHORT" ||
-    !["LEFT", "RIGHT", "UP", "DOWN"].includes(action.control)
-  )
+  if (!isDraftNavigationInput(action))
     return { state, effect: "none", handled: false };
   if (state.handledInteractionIds.includes(action.interactionId))
     return { state, effect: "none", handled: true };
@@ -122,6 +120,16 @@ export function reduceDraft(
     ],
   };
   return { state: next, effect: changed ? "persist" : "none", handled: true };
+}
+
+export function isDraftNavigationInput(
+  action: DraftAction,
+): action is SemanticInput {
+  return (
+    action.type === "semantic-input" &&
+    (action.action === "BEGIN" || action.action === "SHORT") &&
+    ["LEFT", "RIGHT", "UP", "DOWN"].includes(action.control)
+  );
 }
 
 export function validateDraftRecord(

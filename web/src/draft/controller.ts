@@ -27,6 +27,7 @@ export class DraftController {
     storageStatus: "ready",
   };
   private generation = 0;
+  private cleanup = Promise.resolve();
 
   constructor(
     private readonly storage: DraftStorage,
@@ -186,38 +187,42 @@ export class DraftController {
     this.publish();
   }
 
-  async deleteAgent(
+  deleteAgent(
     key: AgentKey,
     stillRemoved: () => boolean = () => true,
   ): Promise<void> {
-    const id = draftKey(key);
-    const backup = await this.backupAgent(key);
-    if (!stillRemoved()) return;
-    await this.storage.deleteAgent(key);
-    if (!stillRemoved()) {
-      const restore = this.records.get(id) ?? backup;
-      if (restore) await this.storage.putAgent(restore);
-      return;
-    }
-    this.records.delete(id);
-    if (sameAgentKey(this.state.current, key)) this.deactivate();
+    return this.clean(async () => {
+      const id = draftKey(key);
+      const backup = await this.backupAgent(key);
+      if (!stillRemoved()) return;
+      await this.storage.deleteAgent(key);
+      if (!stillRemoved()) {
+        const restore = this.records.get(id) ?? backup;
+        if (restore) await this.storage.putAgent(restore);
+        return;
+      }
+      this.records.delete(id);
+      if (sameAgentKey(this.state.current, key)) this.deactivate();
+    });
   }
 
-  async deleteHost(
+  deleteHost(
     serverId: string,
     stillRemoved: () => boolean = () => true,
   ): Promise<void> {
-    const backups = await this.backupHost(serverId);
-    if (!stillRemoved()) return;
-    await this.storage.deleteHost(serverId);
-    if (!stillRemoved()) {
-      for (const record of this.currentHostRecords(serverId, backups))
-        await this.storage.putAgent(record);
-      return;
-    }
-    for (const [id, record] of this.records)
-      if (record.key.serverId === serverId) this.records.delete(id);
-    if (this.state.current?.serverId === serverId) this.deactivate();
+    return this.clean(async () => {
+      const backups = await this.backupHost(serverId);
+      if (!stillRemoved()) return;
+      await this.storage.deleteHost(serverId);
+      if (!stillRemoved()) {
+        for (const record of this.currentHostRecords(serverId, backups))
+          await this.storage.putAgent(record);
+        return;
+      }
+      for (const [id, record] of this.records)
+        if (record.key.serverId === serverId) this.records.delete(id);
+      if (this.state.current?.serverId === serverId) this.deactivate();
+    });
   }
 
   dispose(): void {
@@ -306,6 +311,12 @@ export class DraftController {
     } catch {
       return null;
     }
+  }
+
+  private clean(job: () => Promise<void>): Promise<void> {
+    const next = this.cleanup.then(job, job);
+    this.cleanup = next.catch(() => {});
+    return next;
   }
 
   private async backupHost(serverId: string): Promise<DraftRecord[]> {

@@ -66,6 +66,18 @@ test("disappearing optional areas fall back without losing surviving cursors", (
   assert.equal(reduceDraft(state, input("RIGHT", 11)).effect, "none");
 });
 
+test("request descriptor changes keep the current stable ID and update order", () => {
+  let state = createDraftSession(draft({ activeArea: "request" }), ["a"]);
+  state = reduceDraft(state, {
+    type: "set-requests",
+    requestIds: ["b", "a"],
+  }).state;
+  assert.deepEqual(state.requestIds, ["b", "a"]);
+  assert.equal(state.record.cursors.requestId, "a");
+  state = reduceDraft(state, input("UP", 11)).state;
+  assert.equal(state.record.cursors.requestId, "b");
+});
+
 test("Draft consumes each supported terminal interaction once", () => {
   const state = createDraftSession(draft({ images: [image("one")] }), []);
   const moved = reduceDraft(state, input("RIGHT", 12));
@@ -74,8 +86,11 @@ test("Draft consumes each supported terminal interaction once", () => {
   const duplicate = reduceDraft(moved.state, input("RIGHT", 12));
   assert.equal(duplicate.effect, "none");
   assert.equal(duplicate.handled, true);
+  const begun = reduceDraft(moved.state, input("RIGHT", 13, "BEGIN"));
+  assert.equal(begun.effect, "persist");
+  assert.equal(begun.state.record.activeArea, "text");
   assert.equal(
-    reduceDraft(moved.state, input("RIGHT", 13, "BEGIN")).effect,
+    reduceDraft(begun.state, input("RIGHT", 13, "UPDATE")).effect,
     "none",
   );
   assert.equal(reduceDraft(moved.state, input("COMMAND", 14)).handled, false);
@@ -328,6 +343,52 @@ test("failed and late cleanup retries without deleting a reappeared identity", a
   dispose();
 });
 
+test("late host cleanup restores records when the host reappears", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const storage = new MemoryDraftStorage();
+  storage.records.set(draftKey(key), draft({ key, text: "keep" }));
+  const directory = new FakeDirectory(directorySnapshot([key]));
+  const leases = new FakeLeases([hostLease("alpha")]);
+  const controller = new DraftController(storage);
+  const dispose = bindDraftLifecycle(controller, directory, leases);
+  const deletion = deferred<void>();
+  storage.hostDeletes.set("alpha", deletion.promise);
+
+  leases.emit([]);
+  await tick();
+  leases.emit([hostLease("alpha")]);
+  deletion.resolve();
+  await tick();
+  await tick();
+  assert.equal(storage.records.get(draftKey(key))?.text, "keep");
+  dispose();
+});
+
+test("overlapping Agent and host cleanup cannot resurrect a removed Draft", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const storage = new MemoryDraftStorage();
+  storage.records.set(draftKey(key), draft({ key, text: "remove" }));
+  const directory = new FakeDirectory(directorySnapshot([key]));
+  const leases = new FakeLeases([hostLease("alpha")]);
+  const controller = new DraftController(storage);
+  const dispose = bindDraftLifecycle(controller, directory, leases);
+  const agentDeletion = deferred<void>();
+  const hostDeletion = deferred<void>();
+  storage.deletes.set(draftKey(key), agentDeletion.promise);
+  storage.hostDeletes.set("alpha", hostDeletion.promise);
+
+  directory.emit(directorySnapshot([]));
+  leases.emit([]);
+  await tick();
+  agentDeletion.resolve();
+  await tick();
+  leases.emit([hostLease("alpha")]);
+  hostDeletion.resolve();
+  await tick();
+  assert.equal(storage.records.has(draftKey(key)), false);
+  dispose();
+});
+
 test("diagnostics expose counts and hashes without Draft content or private tokens", async () => {
   const controller = new DraftController(new MemoryDraftStorage());
   await controller.activate(
@@ -338,7 +399,7 @@ test("diagnostics expose counts and hashes without Draft content or private toke
   await controller.appendImageRefs([
     { ...image("secret-image"), token: "secret-private-token" },
   ]);
-  const encoded = JSON.stringify(await draftDiagnostics(controller.snapshot()));
+  const encoded = JSON.stringify(draftDiagnostics(controller.snapshot()));
   assert.match(encoded, /"textLength":17/);
   for (const secret of [
     "secret-host",
@@ -392,6 +453,7 @@ class MemoryDraftStorage implements DraftStorage {
   readonly records = new Map<string, DraftRecord>();
   readonly loads = new Map<string, Promise<unknown | null>>();
   readonly deletes = new Map<string, Promise<void>>();
+  readonly hostDeletes = new Map<string, Promise<void>>();
   readonly writeDelays = new Map<number, Promise<void>>();
   failWrites = false;
   failDeletes = false;
@@ -421,6 +483,7 @@ class MemoryDraftStorage implements DraftStorage {
   }
   async deleteHost(serverId: string): Promise<void> {
     if (this.failDeletes) throw new Error("delete failed");
+    await this.hostDeletes.get(serverId);
     for (const [key, record] of this.records)
       if (record.key.serverId === serverId) this.records.delete(key);
   }
