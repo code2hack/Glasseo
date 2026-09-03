@@ -163,7 +163,12 @@ window.__glasseoDraftTextAcceptance = {
   async beginPhysical() {
     if (physicalSession) throw new Error("Physical acceptance already active");
     const root = document.querySelector<HTMLElement>("#agent-body");
-    if (!root) throw new Error("Application shell missing");
+    const app = document.querySelector<HTMLElement>("#app");
+    const diagnostics = document.querySelector<HTMLElement>("#diagnostics");
+    if (!root || !app || !diagnostics)
+      throw new Error("Application shell missing");
+    diagnostics.hidden = true;
+    app.hidden = false;
     const storage = new IndexedDbDraftStorage();
     await storage.deleteHost(physicalKey.serverId);
     const controller = new DraftController(storage, () => 100);
@@ -183,6 +188,7 @@ window.__glasseoDraftTextAcceptance = {
       document.body.dataset.draftTextPhysicalHandled = String(handled.length);
     });
     physicalSession = { storage, controller, view, disposeInput, handled };
+    document.body.dataset.draftTextPhysicalHandled = "0";
     document.body.dataset.draftTextPhysical = "ready";
     return { ready: true, expectedActions: physicalSequence.length };
   },

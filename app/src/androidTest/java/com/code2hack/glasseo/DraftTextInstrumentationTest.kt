@@ -2,6 +2,7 @@ package com.code2hack.glasseo
 
 import android.content.Intent
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.View
 import android.view.ViewGroup
@@ -124,6 +125,7 @@ class DraftTextPhysicalInstrumentationTest {
             .putExtra(MainActivity.INPUT_CAPTURE_EXTRA, true)
         ActivityScenario.launch<MainActivity>(launchIntent).use { scenario ->
             awaitWebReady()
+            assertTrue(ProbeState.await(60)?.isPassing() == true)
             scenario.onActivity { activity ->
                 val device = InputDevice.getDeviceIds().asSequence()
                     .mapNotNull(InputDevice::getDevice)
@@ -156,8 +158,21 @@ class DraftTextPhysicalInstrumentationTest {
                 activity.evaluateJavascriptForTest(BEGIN_SCRIPT)
             }
             assertEquals("ready", awaitDomValue(scenario, "document.body.dataset.draftTextPhysical || ''", 20_000))
+            val preflight = JSONObject(awaitDomValue(scenario, PREFLIGHT_SCRIPT, 20_000))
+            assertTrue(preflight.getBoolean("productVisible"))
+            assertTrue(preflight.getBoolean("qualificationAbsent"))
+            assertTrue(preflight.getBoolean("draftVisible"))
+            assertTrue(preflight.getBoolean("textActive"))
+            assertTrue(preflight.getBoolean("cursorVisible"))
+            assertTrue(preflight.getBoolean("armed"))
+            assertEquals(0, preflight.getInt("handledActions"))
+            Log.d(
+                "Glasseo",
+                "event=draft-text-physical-armed detail=product=true qualification=false draft=true text=true cursor=true",
+            )
             if (InstrumentationRegistry.getArguments().getString("replay") == "true") {
                 scenario.onActivity(::replayPhysicalSequence)
+                assertTrue(ProbeState.awaitSemanticReceipt(10) != null)
             }
             assertEquals(
                 "8",
@@ -259,6 +274,17 @@ class DraftTextPhysicalInstrumentationTest {
     }
 
     companion object {
+        private val PREFLIGHT_SCRIPT = """
+            JSON.stringify({
+              productVisible: !document.querySelector('#app').hidden,
+              qualificationAbsent: document.querySelector('#diagnostics').hidden,
+              draftVisible: document.querySelector('#agent-body').dataset.destination === 'draft',
+              textActive: document.querySelector('[data-area="text"]').getAttribute('aria-current') === 'true',
+              cursorVisible: !!document.querySelector('[data-area="text"] .draft-unit.cursor'),
+              armed: document.body.dataset.draftTextPhysical === 'ready',
+              handledActions: Number(document.body.dataset.draftTextPhysicalHandled),
+            })
+        """.trimIndent()
         private val BEGIN_SCRIPT = """
             import('./draft/text/ui-acceptance-entry.js')
               .then(() => window.__glasseoDraftTextAcceptance.beginPhysical())
