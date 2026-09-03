@@ -223,7 +223,7 @@ test("text cursor mutation rejects non-integers without changing the Draft", asy
   assert.equal(storage.records.size, 0);
 });
 
-test("dirty retry yields to newer storage authority on the next re-entry", async () => {
+test("dirty retry yields permanently to newer storage authority", async () => {
   const storage = new MemoryDraftStorage();
   const key = { serverId: "alpha", agentId: "agent" };
   const controller = new DraftController(storage);
@@ -241,6 +241,15 @@ test("dirty retry yields to newer storage authority on the next re-entry", async
   await controller.activate(key);
   assert.equal(controller.snapshot().storageStatus, "ready");
   assert.equal(controller.snapshot().session?.record.text, "newer stored text");
+  for (let activation = 0; activation < 2; activation++) {
+    await controller.activate(key);
+    assert.equal(controller.snapshot().storageStatus, "ready");
+    assert.equal(
+      controller.snapshot().session?.record.text,
+      "newer stored text",
+    );
+  }
+  assert.equal(storage.records.get(draftKey(key))?.revision, 50);
 });
 
 test("pending navigation and requests replay over a higher stored revision", async () => {
@@ -368,7 +377,56 @@ test("delayed restore replays input once and preserves its handled ID", async ()
   assert.equal(controller.snapshot().session?.record.activeArea, "images");
 });
 
-test("a corrupt record is replaced without poisoning sibling Agents", async () => {
+test("pending duplicate image replay is idempotent over stored authority", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "agent" };
+  const read = deferred<unknown | null>();
+  storage.loads.set(draftKey(key), read.promise);
+  const controller = new DraftController(storage);
+  const activating = controller.activate(key);
+  await controller.appendImageRefs([image("same")]);
+  const stored = draft({
+    key,
+    revision: 50,
+    text: "stored text",
+    images: [image("same")],
+    cursors: { requestId: null, textOffset: 0, imageId: "same" },
+  });
+  storage.records.set(draftKey(key), stored);
+  read.resolve(stored);
+
+  await activating;
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.deepEqual(controller.snapshot().session?.record, stored);
+  assert.deepEqual(storage.records.get(draftKey(key)), stored);
+});
+
+test("conflicting pending image replay preserves stored authority", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "agent" };
+  const read = deferred<unknown | null>();
+  storage.loads.set(draftKey(key), read.promise);
+  const controller = new DraftController(storage);
+  const activating = controller.activate(key);
+  await controller.appendImageRefs([
+    { ...image("same"), mimeType: "image/png" },
+  ]);
+  const stored = draft({
+    key,
+    revision: 50,
+    text: "stored text",
+    images: [image("same")],
+  });
+  storage.records.set(draftKey(key), stored);
+  read.resolve(stored);
+
+  await activating;
+  assert.equal(controller.snapshot().storageStatus, "error");
+  assert.deepEqual(controller.snapshot().session?.record, stored);
+  assert.deepEqual(storage.records.get(draftKey(key)), stored);
+});
+
+test("a corrupt record replacement becomes ready only after accepted persistence", async () => {
   const storage = new MemoryDraftStorage();
   const bad = { serverId: "alpha", agentId: "bad" };
   const good = { serverId: "alpha", agentId: "good" };
@@ -380,10 +438,73 @@ test("a corrupt record is replaced without poisoning sibling Agents", async () =
   const controller = new DraftController(storage);
   await controller.activate(bad);
   assert.equal(controller.snapshot().session?.record.text, "");
-  assert.equal(controller.snapshot().storageStatus, "error");
+  assert.equal(controller.snapshot().storageStatus, "ready");
   assert.equal(storage.records.get(draftKey(bad))?.schemaVersion, 1);
   await controller.activate(good);
   assert.equal(controller.snapshot().session?.record.text, "good");
+});
+
+test("actions during corrupt replacement replay after accepted persistence", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "bad" };
+  storage.loads.set(
+    draftKey(key),
+    Promise.resolve({ ...draft({ key }), schemaVersion: 0 }),
+  );
+  const replacement = deferred<void>();
+  storage.writeDelays.set(0, replacement.promise);
+  const controller = new DraftController(storage);
+
+  const activating = controller.activate(key);
+  await tick();
+  const editing = controller.replaceText("during replacement");
+  replacement.resolve();
+  await activating;
+  await editing;
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(
+    controller.snapshot().session?.record.text,
+    "during replacement",
+  );
+  assert.equal(storage.records.get(draftKey(key))?.text, "during replacement");
+});
+
+test("failed corrupt replacement stays retryable without caching temporary authority", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "bad" };
+  const corrupt = { ...draft({ key }), schemaVersion: 0 };
+  storage.loads.set(draftKey(key), Promise.resolve(corrupt));
+  storage.failWrites = true;
+  const controller = new DraftController(storage);
+
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "error");
+  assert.equal(storage.records.has(draftKey(key)), false);
+  storage.failWrites = false;
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(storage.records.get(draftKey(key))?.schemaVersion, 1);
+});
+
+test("declined corrupt replacement never reports false ready", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "bad" };
+  storage.loads.set(
+    draftKey(key),
+    Promise.resolve({ ...draft({ key }), schemaVersion: 0 }),
+  );
+  storage.declineWrites = true;
+  const controller = new DraftController(storage);
+
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "error");
+  assert.equal(storage.records.has(draftKey(key)), false);
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "error");
+  storage.declineWrites = false;
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(storage.records.get(draftKey(key))?.schemaVersion, 1);
 });
 
 test("IndexedDB Draft storage round-trips, fences revisions, and deletes exact scopes", async () => {
@@ -420,6 +541,21 @@ test("IndexedDB Draft storage round-trips, fences revisions, and deletes exact s
   await storage.deleteHost("alpha");
   assert.equal(await storage.loadAgent(alphaOther), null);
   assert.notEqual(await storage.loadAgent(beta), null);
+});
+
+test("IndexedDB atomically replaces an existing corrupt Draft row", async () => {
+  const factory = new FakeIndexedDbFactory();
+  const key = { serverId: "alpha", agentId: "corrupt" };
+  factory.seed(key, { ...draft({ key }), schemaVersion: 0 });
+  const storage = new IndexedDbDraftStorage(factory.value);
+  const controller = new DraftController(storage);
+
+  await controller.activate(key);
+  assert.equal(controller.snapshot().storageStatus, "ready");
+  assert.equal(
+    ((await storage.loadAgent(key)) as DraftRecord).schemaVersion,
+    1,
+  );
 });
 
 test("lifecycle retains offline Drafts and cleans only confirmed Agent or host removal", async () => {
@@ -654,6 +790,7 @@ class MemoryDraftStorage implements DraftStorage {
   readonly writeDelays = new Map<number, Promise<void>>();
   failWrites = false;
   failDeletes = false;
+  declineWrites = false;
 
   loadAgent(key: DraftRecord["key"]): Promise<unknown | null> {
     return (
@@ -668,6 +805,7 @@ class MemoryDraftStorage implements DraftStorage {
   }
   async putAgent(record: DraftRecord): Promise<boolean> {
     if (this.failWrites) throw new Error("write failed");
+    if (this.declineWrites) return false;
     await this.writeDelays.get(record.revision);
     const present = this.records.get(draftKey(record.key));
     if (!present || present.revision < record.revision) {
@@ -782,6 +920,11 @@ class FakeIndexedDbFactory {
       return request;
     },
   } as unknown as IDBFactory;
+
+  seed(key: DraftRecord["key"], record: unknown): void {
+    const id = draftKey(key);
+    this.rows.set(id, { id, serverId: key.serverId, record });
+  }
 
   private database(): IDBDatabase {
     return {

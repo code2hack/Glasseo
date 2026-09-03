@@ -81,55 +81,73 @@ export class DraftController {
       return;
     }
     this.hydratingGeneration = generation;
-    let loaded = false;
+    let value: unknown | null;
     try {
-      const value = await this.storage.loadAgent(key);
-      loaded = true;
-      if (!this.isCurrent(key, generation)) return;
-      const currentSession = this.state.session!;
-      const record =
-        value === null
-          ? createDraftRecord(key, this.clock())
-          : validateDraftRecord(value, key);
-      let restored = createDraftSession(record, requestIds);
-      for (const action of this.pendingActions)
-        restored = reduceDraft(restored, action).state;
-      restored = {
-        ...restored,
-        transient: currentSession.transient,
-      };
-      this.pendingActions = [];
-      this.hydratingGeneration = null;
-      const changed = restored.record.revision !== record.revision;
-      const restoredRecord = changed
-        ? { ...restored.record, updatedAt: this.clock() }
-        : restored.record;
-      restored = { ...restored, record: restoredRecord };
-      this.records.set(draftKey(key), restoredRecord);
-      this.state = {
-        current: { ...key },
-        session: restored,
-        storageStatus: changed ? "loading" : "ready",
-      };
-      this.publish();
-      if (changed) await this.persist(restoredRecord, generation);
+      value = await this.storage.loadAgent(key);
     } catch {
       if (!this.isCurrent(key, generation)) return;
       this.pendingActions = [];
       this.hydratingGeneration = null;
-      if (!loaded) this.blockedGeneration = generation;
+      this.blockedGeneration = generation;
       this.state = { ...this.state, storageStatus: "error" };
       this.publish();
-      if (loaded)
-        try {
-          const record = this.state.session!.record;
-          this.records.set(draftKey(key), record);
-          await this.storage.deleteAgent(key);
-          await this.storage.putAgent(record);
-        } catch {
-          // The blank in-memory Draft remains usable and a later mutation retries storage.
-        }
+      return;
     }
+    if (!this.isCurrent(key, generation)) return;
+    const currentSession = this.state.session!;
+    let record: DraftRecord;
+    try {
+      record =
+        value === null
+          ? createDraftRecord(key, this.clock())
+          : validateDraftRecord(value, key);
+    } catch {
+      await this.replaceCorrupt(currentSession, generation);
+      return;
+    }
+    let restored = createDraftSession(record, requestIds);
+    try {
+      for (const action of this.pendingActions)
+        restored = reduceDraft(restored, action).state;
+    } catch {
+      this.pendingActions = [];
+      this.hydratingGeneration = null;
+      this.blockedGeneration = generation;
+      this.records.set(id, record);
+      this.dirtyRecords.delete(id);
+      this.state = {
+        current: { ...key },
+        session: {
+          record,
+          requestIds: currentSession.requestIds,
+          transient: currentSession.transient,
+          handledInteractionIds: currentSession.handledInteractionIds,
+        },
+        storageStatus: "error",
+      };
+      this.publish();
+      return;
+    }
+    restored = {
+      ...restored,
+      transient: currentSession.transient,
+    };
+    this.pendingActions = [];
+    this.hydratingGeneration = null;
+    const changed = restored.record.revision !== record.revision;
+    const restoredRecord = changed
+      ? { ...restored.record, updatedAt: this.clock() }
+      : restored.record;
+    restored = { ...restored, record: restoredRecord };
+    this.records.set(id, restoredRecord);
+    this.dirtyRecords.delete(id);
+    this.state = {
+      current: { ...key },
+      session: restored,
+      storageStatus: changed ? "loading" : "ready",
+    };
+    this.publish();
+    if (changed) await this.persist(restoredRecord, generation);
   }
 
   deactivate(): void {
@@ -294,8 +312,10 @@ export class DraftController {
         this.isCurrent(record.key, generation) &&
         this.state.session?.record.revision === record.revision
       ) {
-        if (!written && this.records.get(id)?.revision === record.revision)
+        if (!written && this.records.get(id)?.revision === record.revision) {
           this.records.delete(id);
+          this.dirtyRecords.delete(id);
+        }
         if (!written) this.blockedGeneration = generation;
         this.state = {
           ...this.state,
@@ -316,6 +336,66 @@ export class DraftController {
       }
       return false;
     }
+  }
+
+  private async replaceCorrupt(
+    replacement: DraftSessionState,
+    generation: number,
+  ): Promise<void> {
+    const record = replacement.record;
+    const id = draftKey(record.key);
+    this.pendingActions = [];
+    let written = false;
+    try {
+      written = await this.storage.putAgent(record);
+    } catch {
+      // A later activation reloads and retries the corrupt row.
+    }
+    if (!this.isCurrent(record.key, generation)) return;
+    const currentSession = this.state.session!;
+    const pendingActions = this.pendingActions;
+    this.pendingActions = [];
+    this.hydratingGeneration = null;
+    if (!written) {
+      this.blockedGeneration = generation;
+      this.state = { ...this.state, storageStatus: "error" };
+      this.publish();
+      return;
+    }
+    this.records.set(id, record);
+    this.dirtyRecords.delete(id);
+    let restored = replacement;
+    try {
+      for (const action of pendingActions)
+        restored = reduceDraft(restored, action).state;
+    } catch {
+      this.blockedGeneration = generation;
+      this.state = {
+        ...this.state,
+        session: {
+          ...replacement,
+          requestIds: currentSession.requestIds,
+          transient: currentSession.transient,
+          handledInteractionIds: currentSession.handledInteractionIds,
+        },
+        storageStatus: "error",
+      };
+      this.publish();
+      return;
+    }
+    restored = { ...restored, transient: currentSession.transient };
+    const changed = restored.record.revision !== record.revision;
+    const restoredRecord = changed
+      ? { ...restored.record, updatedAt: this.clock() }
+      : restored.record;
+    this.records.set(id, restoredRecord);
+    this.state = {
+      ...this.state,
+      session: { ...restored, record: restoredRecord },
+      storageStatus: changed ? "loading" : "ready",
+    };
+    this.publish();
+    if (changed) await this.persist(restoredRecord, generation);
   }
 
   private requireSession(): DraftSessionState {

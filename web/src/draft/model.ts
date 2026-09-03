@@ -104,7 +104,7 @@ export function reduceDraft(
       action.type === "set-images"
         ? action.images
         : action.type === "append-images"
-          ? [...state.record.images, ...action.images]
+          ? appendImages(state.record.images, action.images)
           : state.record.images.filter(({ id }) => !removed.has(id)),
     );
     if (sameImages(state.record.images, images))
@@ -369,6 +369,22 @@ function uniqueImages(
     ids.add(image.id);
     return image;
   });
+}
+
+function appendImages(
+  current: readonly DraftImageRef[],
+  appended: readonly DraftImageRef[],
+): readonly DraftImageRef[] {
+  const images = [...current];
+  const byId = new Map(images.map((image) => [image.id, image]));
+  for (const image of uniqueImages(appended)) {
+    const present = byId.get(image.id);
+    if (!present) {
+      images.push(image);
+      byId.set(image.id, image);
+    } else if (!sameImages([present], [image])) throw invalid();
+  }
+  return images;
 }
 
 function sameImages(
