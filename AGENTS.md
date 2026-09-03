@@ -104,10 +104,11 @@ A Worker is a Codex thread created by the Manager for exactly one GitHub issue. 
 - fetches and reads the current remote-`main` `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md`, plus the assigned issue, its CTO plan comment, and relevant repository evidence;
 - treats any worktree copies of `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` as read-only snapshots and never edits them;
 - implements only the assigned ticket and its accepted plan;
+- immediately after every implementation or correction pass, performs an ablation study of its own changes to simplify the code: systematically attempts to remove, merge, inline, reuse, or collapse newly introduced code, abstractions, state, dependencies, branches, compatibility shims, and test-only seams; keeps complexity only when it is necessary for accepted behavior, platform compatibility, verification, or clear maintainability; and reruns affected tests after simplification;
 - builds, tests, verifies, and debugs according to the current remote-`main` `DEV.md`;
 - reports blockers, ambiguity, dependency conflicts, article-change needs, and human gates to the Manager;
 - commits and pushes its completed work to the assigned remote branch;
-- reports the commit, tests, verification evidence, remaining risks, and any deviations to the Manager.
+- reports the commit, tests, verification evidence, ablation/simplification result, remaining risks, and any deviations to the Manager.
 
 Workers do not merge pull requests and never edit `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md`.
 
@@ -349,19 +350,21 @@ A Worker follows this loop:
 1. Fetch remote `main`; verify repository, branch/worktree, issue, plan, and the current canonical `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md`.
 2. Confirm that the implementation worktree has no intentional diff to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md`.
 3. Implement the CTO plan.
-4. Run required build, test, verification, and debugging commands.
-5. Report any blocker, article-change need, or human gate to the Manager through `$ask-codex`, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
-6. Update implementation and tests until acceptance criteria pass.
-7. Before commit/push, fetch remote `main` again, re-check any article changes that affect the work, and ensure the four project articles are absent from the implementation diff.
-8. Commit and push the assigned branch.
-9. Report to the Manager through `$ask-codex` with:
+4. **Immediately after implementation, perform an ablation study before final verification.** Challenge every newly introduced abstraction, helper, layer, state field, dependency, branch, compatibility shim, test-only seam, and duplicated path. Attempt to delete it, merge it with an existing path, inline it, reuse an existing primitive, or otherwise reduce it. Keep the simpler version whenever the accepted behavior and necessary platform/test guarantees remain intact. Record what was removed or simplified and briefly justify any substantial complexity that remains.
+5. Run targeted tests affected by the ablation changes, then run the required build, test, verification, and debugging commands from `DEV.md`.
+6. Report any blocker, article-change need, or human gate to the Manager through `$ask-codex`, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
+7. Update implementation and tests until acceptance criteria pass. After every correction implementation pass, repeat the ablation study in step 4 before considering that pass complete.
+8. Before commit/push, fetch remote `main` again, re-check any article changes that affect the work, and ensure the four project articles are absent from the implementation diff.
+9. Commit and push the assigned branch.
+10. Report to the Manager through `$ask-codex` with:
    - commit SHA;
    - concise change summary;
+   - ablation/simplification summary, including what was removed/simplified and any intentionally retained complexity;
    - commands run and results;
    - real-device or integration evidence;
    - known limitations or residual risks;
    - deviations from the CTO plan, if any.
-10. Verify both `DELIVERED` and Manager `RECEIVER_WORKING` for the completion report according to Section 4.2 before ending the turn.
+11. Verify both `DELIVERED` and Manager `RECEIVER_WORKING` for the completion report according to Section 4.2 before ending the turn.
 
 ## 9. Pull request, review, and correction loop
 
@@ -378,7 +381,7 @@ When review returns `CHANGES_REQUESTED`:
 1. The CTO writes a concrete correction plan on the issue or pull request.
 2. The CTO informs the Manager through `$ask-chatgpt`.
 3. The Manager re-dispatches the correction plan to the same Worker through `$ask-codex` and verifies both `DELIVERED` and Worker `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
-4. The Worker updates, tests, commits, pushes, and reports again.
+4. The Worker updates, performs the mandatory post-implementation ablation study from Section 8, tests, commits, pushes, and reports again.
 5. The loop repeats until the CTO records `PASS`.
 
 When review returns `PASS`:
