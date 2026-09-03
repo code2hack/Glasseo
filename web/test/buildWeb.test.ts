@@ -15,6 +15,7 @@ test("Web build removes obsolete generated assets", async () => {
   await assert.rejects(access(`${output}/obsolete.js`));
   assert.deepEqual((await readdir(output)).sort(), [
     "config",
+    "draft",
     "index.html",
     "main.js",
     "main.js.map",
@@ -24,6 +25,10 @@ test("Web build removes obsolete generated assets", async () => {
     "timeline-acceptance.html",
   ]);
   assert.deepEqual((await readdir(`${output}/config`)).sort(), [
+    "ui-acceptance-entry.js",
+    "ui-acceptance-entry.js.map",
+  ]);
+  assert.deepEqual((await readdir(`${output}/draft`)).sort(), [
     "ui-acceptance-entry.js",
     "ui-acceptance-entry.js.map",
   ]);
