@@ -198,7 +198,7 @@ export class DraftDestinationBody implements DestinationBody {
         this.units.delete(id);
       }
     const ordered = descriptors.map(
-      ({ id, label, cursor, selected, option, empty, scroll }) => {
+      ({ id, label, cursor, selected, option, empty }) => {
         const key = `${area}:${id}`;
         let unit = this.units.get(key);
         if (!unit) {
@@ -217,12 +217,16 @@ export class DraftDestinationBody implements DestinationBody {
           unit.removeAttribute("role");
           unit.removeAttribute("aria-selected");
         }
-        if (scroll)
-          unit.scrollIntoView({ block: "nearest", inline: "nearest" });
         return unit;
       },
     );
     element.units.append(...ordered);
+    const scrollIndex = descriptors.findIndex(({ scroll }) => scroll);
+    if (scrollIndex >= 0)
+      ordered[scrollIndex]!.scrollIntoView({
+        block: "nearest",
+        inline: "nearest",
+      });
     return element.section;
   }
 }

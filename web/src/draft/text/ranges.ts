@@ -69,7 +69,7 @@ export function dwRange(
   );
   return {
     start: current.start,
-    end: units[index + 1]?.start ?? current.end,
+    end: units[index + 1]?.start ?? text.length,
   };
 }
 

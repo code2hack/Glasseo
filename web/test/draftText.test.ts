@@ -106,6 +106,9 @@ test("movement clamps, selection ranges are inclusive, and dw is exact", () => {
   });
   assert.deepEqual(dwRange(text, 3), { start: 3, end: 6 });
   assert.deepEqual(dwRange(text, text.length), { start: 10, end: 15 });
+  assert.deepEqual(dwRange("one ", 0), { start: 0, end: 4 });
+  assert.deepEqual(dwRange("one \n", 0), { start: 0, end: 5 });
+  assert.deepEqual(dwRange("prefix one \n", 7), { start: 7, end: 12 });
   assert.equal(dwRange(" \n ", 0), null);
   assert.deepEqual(replaceTextRange(text, 3, 6, ""), {
     text: "onetwo\nthree",
@@ -188,6 +191,29 @@ test("empty edits no-op safely and committed replacement resets transient state"
     selection: null,
     copyBuffer: "",
   });
+});
+
+test("deleting the final token consumes trailing whitespace and remains operable", () => {
+  for (const [index, text] of ["one ", "one \n"].entries()) {
+    let state = createTextEditorState(text);
+    state = reduceTextEditor(
+      state,
+      input("SECONDARY", "LONG", 100 + index * 2),
+    ).state;
+    assert.equal(state.text, "");
+    assert.equal(state.cursorOffset, 0);
+
+    state = reduceTextEditor(state, {
+      type: "insert-committed-text",
+      text,
+    }).state;
+    assert.equal(state.text, text);
+    state = reduceTextEditor(
+      state,
+      input("SECONDARY", "LONG", 101 + index * 2),
+    ).state;
+    assert.equal(state.text, "");
+  }
 });
 
 test("projection preserves whitespace, exposes keyed cursor state, and contains no HTML", () => {

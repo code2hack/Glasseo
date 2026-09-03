@@ -159,6 +159,45 @@ test("Draft Text renders stable safe tokens and routes only the accepted grammar
   view.dispose();
 });
 
+test("text edits scroll the attached replacement cursor to the nearest edge", async () => {
+  installDom();
+  const controller = new DraftController(new MemoryStorage());
+  const root = new FakeElement("main") as unknown as HTMLElement;
+  const view = new DraftDestinationBody(controller, () => []);
+  view.mount(root);
+  view.update(context({ serverId: "alpha", agentId: "wrapped" }));
+  await tick();
+  await controller.replaceText(
+    `one ${"antidisestablishmentarianism ".repeat(20)}\nlast`,
+  );
+  await tick();
+
+  const list = (root.children[0] as unknown as FakeElement).children[0]!;
+  const textUnits = list.children.find(
+    ({ dataset }) => dataset.area === "text",
+  )!.children[1]!;
+  for (const unit of textUnits.children) unit.scrollParents = [];
+
+  assert.equal(view.handleInput(input("SECONDARY", "LONG", 601)), true);
+  await tick();
+
+  const cursor = textUnits.children.find(({ className }) =>
+    className.split(" ").includes("cursor"),
+  )!;
+  assert.equal(cursor.scrollParents.length > 0, true);
+  assert.equal(
+    cursor.scrollParents.every((parent) => parent === textUnits),
+    true,
+  );
+  assert.equal(
+    cursor.scrollOptions.every(
+      (options) => options.block === "nearest" && options.inline === "nearest",
+    ),
+    true,
+  );
+  view.dispose();
+});
+
 function context(key: AgentKey) {
   return {
     destination: { kind: "agent" as const, key, pane: "draft" as const },
@@ -217,6 +256,8 @@ class FakeElement {
   hidden = false;
   scrollTop = 0;
   scrollCalls = 0;
+  scrollParents: (FakeElement | null)[] = [];
+  scrollOptions: ScrollIntoViewOptions[] = [];
   constructor(readonly tagName: string) {}
   get scrollHeight(): number {
     return this.children.length * 48;
@@ -253,8 +294,10 @@ class FakeElement {
   }
   setAttribute(): void {}
   removeAttribute(): void {}
-  scrollIntoView(): void {
+  scrollIntoView(options?: ScrollIntoViewOptions): void {
     this.scrollCalls++;
+    this.scrollParents.push(this.parent);
+    if (options) this.scrollOptions.push(options);
   }
 }
 
