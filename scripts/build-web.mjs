@@ -9,6 +9,7 @@ await build({
     "web/src/main.ts",
     "web/src/styles.css",
     "web/src/timeline/acceptance-entry.ts",
+    "web/src/timeline/ui-acceptance-entry.ts",
   ],
   bundle: true,
   conditions: ["node"],

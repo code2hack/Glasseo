@@ -57,15 +57,22 @@ body,
 }
 
 #agent-body {
+  position: relative;
   display: grid;
   min-height: 0;
+  overflow: hidden;
+}
+
+#agent-body[data-destination="draft"],
+#agent-body[data-destination="config"] {
   padding: 24px;
   place-content: center;
   text-align: center;
 }
 
 h1,
-p {
+p,
+pre {
   margin: 0;
 }
 
@@ -76,6 +83,111 @@ h1 {
 p {
   color: #b8c4cc;
   font-size: 20px;
+}
+
+.timeline-viewport {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px 84px;
+  line-height: 24px;
+  scrollbar-width: none;
+}
+
+.timeline-list {
+  display: grid;
+  gap: 10px;
+}
+
+.timeline-row {
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 3px solid #65727a;
+  background: #080b0d;
+  overflow-wrap: anywhere;
+}
+
+.timeline-row.user {
+  border-left-color: #8ed6ff;
+}
+
+.timeline-row.assistant {
+  border-left-color: #b6f59b;
+}
+
+.timeline-row.reasoning {
+  border-left-color: #bfa8ff;
+  color: #d4c9ef;
+}
+
+.timeline-row.error,
+.timeline-row.tool-failed {
+  border-left-color: #ff8b8b;
+}
+
+.timeline-row.provisional {
+  border-left-style: dashed;
+  opacity: 0.78;
+}
+
+.timeline-row-label {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 8px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.timeline-row-label span {
+  overflow: hidden;
+  color: #8c9aa3;
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-row-content {
+  max-width: 100%;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  color: #e8eef2;
+  font: inherit;
+  font-size: 18px;
+  line-height: 24px;
+  white-space: pre-wrap;
+}
+
+pre.timeline-row-content {
+  overflow-x: auto;
+  word-break: break-word;
+}
+
+.timeline-status,
+.timeline-unseen {
+  position: absolute;
+  z-index: 1;
+  right: 12px;
+  bottom: 10px;
+  max-width: calc(100% - 24px);
+  padding: 5px 9px;
+  border: 1px solid #65727a;
+  border-radius: 12px;
+  background: #050708e6;
+  color: #b8c4cc;
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.timeline-unseen {
+  color: #8ed6ff;
+}
+
+.timeline-status:not([hidden]) + .timeline-unseen {
+  bottom: 42px;
 }
 
 #diagnostics:not([hidden]) {
