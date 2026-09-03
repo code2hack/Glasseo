@@ -155,6 +155,12 @@ class DraftTextPhysicalInstrumentationTest {
                         ),
                     )
                 }
+                assertEquals(7, bindings.size)
+                Log.d(
+                    "Glasseo",
+                    "event=draft-text-physical-bindings detail=count=7 descriptor=${device.descriptor} " +
+                        "vendor=${device.vendorId} product=${device.productId}",
+                )
                 activity.evaluateJavascriptForTest(BEGIN_SCRIPT)
             }
             assertEquals("ready", awaitDomValue(scenario, "document.body.dataset.draftTextPhysical || ''", 20_000))
@@ -168,7 +174,8 @@ class DraftTextPhysicalInstrumentationTest {
             assertEquals(0, preflight.getInt("handledActions"))
             Log.d(
                 "Glasseo",
-                "event=draft-text-physical-armed detail=product=true qualification=false draft=true text=true cursor=true",
+                "event=draft-text-physical-armed detail=product=true qualification=false draft=true text=true " +
+                    "cursor=true listener=true handled=0",
             )
             if (InstrumentationRegistry.getArguments().getString("replay") == "true") {
                 scenario.onActivity(::replayPhysicalSequence)
