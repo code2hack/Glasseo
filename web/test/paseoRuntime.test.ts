@@ -425,6 +425,34 @@ test("read methods and selective timeline subscription delegate exact v0.7.0 RPC
   });
   assert.equal(await agent, null);
 
+  const permissions = runtime.getPermissionSnapshot("agent-1");
+  const permissionRequest = transport.last("fetch_agent_request");
+  const permissionAgent = agentPayload("agent-1", "2026-09-03T00:00:00Z");
+  transport.reply(permissionRequest, "fetch_agent_response", {
+    ...permissionAgent,
+    agent: {
+      ...permissionAgent.agent,
+      pendingPermissions: [
+        {
+          id: "permission-1",
+          provider: "codex",
+          name: "CodexBash",
+          kind: "tool",
+          title: "Run command",
+        },
+      ],
+    },
+    error: null,
+  });
+  assert.deepEqual(
+    (await permissions).map(({ id, kind, actions }) => ({
+      id,
+      kind,
+      actions: actions.map(({ id }) => id),
+    })),
+    [{ id: "permission-1", kind: "tool", actions: ["reject", "accept"] }],
+  );
+
   const timeline = runtime.getTimeline("agent-1", {
     direction: "tail",
     projection: "projected",
@@ -501,7 +529,15 @@ test("read methods and selective timeline subscription delegate exact v0.7.0 RPC
 test("events are validated, filtered, and stop after dispose", async () => {
   const { runtime, transport } = await connect();
   const received: string[] = [];
+  const permissions: string[] = [];
   runtime.subscribeEvents((event) => received.push(event.type));
+  runtime.subscribePermissions((event) =>
+    permissions.push(
+      event.type === "requested"
+        ? `${event.type}:${event.request.kind}`
+        : `${event.type}:${event.requestId}`,
+    ),
+  );
   transport.receive({
     type: "agent_update",
     payload: { kind: "remove", agentId: "agent-1" },
@@ -554,12 +590,14 @@ test("events are validated, filtered, and stop after dispose", async () => {
     "agent_permission_resolved",
     "status",
   ]);
+  assert.deepEqual(permissions, ["requested:tool", "resolved:permission-1"]);
   await runtime.close();
   transport.receive({
     type: "agent_update",
     payload: { kind: "remove", agentId: "stale" },
   });
   assert.equal(received.length, 7);
+  assert.equal(permissions.length, 2);
 });
 
 test("directory events include archive, isolate consumers, and unsubscribe", async () => {

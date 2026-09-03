@@ -5,7 +5,10 @@ import {
   type DaemonEvent,
   type DaemonTransportFactory,
 } from "@getpaseo/client/internal/daemon-client";
-import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
+import type {
+  AgentPermissionRequest,
+  AgentPermissionResponse,
+} from "@getpaseo/protocol/agent-types";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import { ConnectionOfferSchema } from "@getpaseo/protocol/connection-offer";
@@ -116,6 +119,65 @@ export type PaseoDictationEvent = Extract<
   { type: (typeof DICTATION_EVENT_TYPES)[number] }
 >;
 
+export type PaseoPermissionKind =
+  | "tool"
+  | "plan"
+  | "question"
+  | "mode"
+  | "other";
+export type PaseoPermissionAction = Readonly<{
+  id: string;
+  label: string;
+  behavior: "allow" | "deny";
+  variant: "primary" | "secondary" | "danger" | null;
+  intent: "implement" | "implement_resume" | "dismiss" | null;
+  explicit: boolean;
+}>;
+export type PaseoPermissionQuestion = Readonly<{
+  id: string;
+  header: string;
+  prompt: string;
+  options: readonly Readonly<{
+    id: string;
+    label: string;
+    description: string | null;
+  }>[];
+  multiSelect: boolean;
+  allowOther: boolean;
+  allowEmpty: boolean;
+  placeholder: string | null;
+}>;
+export type PaseoPermissionSuggestion = Readonly<{
+  id: string;
+  label: string;
+  update: Readonly<Record<string, unknown>>;
+}>;
+export type PaseoPermissionRequest = Readonly<{
+  id: string;
+  provider: string;
+  name: string;
+  kind: PaseoPermissionKind;
+  title: string | null;
+  description: string | null;
+  detail: Readonly<{ type: string; truncated: boolean }> | null;
+  actions: readonly PaseoPermissionAction[];
+  suggestions: readonly PaseoPermissionSuggestion[];
+  questions: readonly PaseoPermissionQuestion[];
+  responseSeed: Readonly<Record<string, unknown>> | null;
+  unsupportedReason: string | null;
+}>;
+export type PaseoPermissionEvent =
+  | Readonly<{
+      type: "requested";
+      agentId: string;
+      request: PaseoPermissionRequest;
+    }>
+  | Readonly<{
+      type: "resolved";
+      agentId: string;
+      requestId: string;
+    }>;
+
 export interface PaseoHostInfo {
   serverId: string;
   hostname: string | null;
@@ -152,6 +214,12 @@ export interface PaseoRuntime {
   listWorkspaces(options?: PaseoWorkspacesOptions): Promise<PaseoWorkspaces>;
   listAgents(options?: PaseoAgentsOptions): Promise<PaseoAgents>;
   getAgent(agentId: string): Promise<PaseoAgent>;
+  getPermissionSnapshot(
+    agentId: string,
+  ): Promise<readonly PaseoPermissionRequest[]>;
+  subscribePermissions(
+    listener: (event: PaseoPermissionEvent) => void,
+  ): () => void;
   getTimeline(
     agentId: string,
     options?: PaseoTimelineOptions,
@@ -489,6 +557,48 @@ export function createPaseoRuntime(options: PaseoRuntimeOptions): PaseoRuntime {
       call(() => client.fetchWorkspaces(readOptions)),
     listAgents: (readOptions) => call(() => client.fetchAgents(readOptions)),
     getAgent: (agentId) => call(() => client.fetchAgent({ agentId })),
+    getPermissionSnapshot: (agentId) =>
+      call(() => client.fetchAgent({ agentId })).then((response) =>
+        normalizePermissionRequests(response?.agent.pendingPermissions ?? []),
+      ),
+    subscribePermissions(listener) {
+      if (disposed) return () => {};
+      const notify = (event: PaseoPermissionEvent) => {
+        try {
+          listener(event);
+        } catch {
+          try {
+            options.log?.("warn", "Paseo permission subscriber failed");
+          } catch {
+            // Subscriber and logging failures never affect runtime ownership.
+          }
+        }
+      };
+      const unsubscribes = [
+        client.on("agent_permission_request", (message) => {
+          if (host)
+            notify({
+              type: "requested",
+              agentId: message.payload.agentId,
+              request: normalizePermissionRequest(message.payload.request),
+            });
+        }),
+        client.on("agent_permission_resolved", (message) => {
+          if (host)
+            notify({
+              type: "resolved",
+              agentId: message.payload.agentId,
+              requestId: message.payload.requestId,
+            });
+        }),
+      ];
+      const unsubscribe = () => {
+        subscriptions.delete(unsubscribe);
+        for (const stop of unsubscribes) stop();
+      };
+      subscriptions.add(unsubscribe);
+      return unsubscribe;
+    },
     getTimeline: (agentId, timelineOptions) =>
       call(() => client.fetchAgentTimeline(agentId, timelineOptions)),
     setTimelineSubscription: (agentIds) =>
@@ -564,6 +674,238 @@ function validateOptions(options: PaseoRuntimeOptions): void {
       "Relay URL serverId does not match the expected host",
     );
   }
+}
+
+const QUESTION_PROVIDERS = new Set(["claude", "codex", "omp", "pi"]);
+const DEFAULT_PERMISSION_ACTIONS: readonly PaseoPermissionAction[] = [
+  {
+    id: "reject",
+    label: "Deny",
+    behavior: "deny",
+    variant: "danger",
+    intent: "dismiss",
+    explicit: false,
+  },
+  {
+    id: "accept",
+    label: "Accept",
+    behavior: "allow",
+    variant: "primary",
+    intent: null,
+    explicit: false,
+  },
+];
+
+export function normalizePermissionRequests(
+  requests: readonly AgentPermissionRequest[],
+): readonly PaseoPermissionRequest[] {
+  return requests.map(normalizePermissionRequest);
+}
+
+export function normalizePermissionRequest(
+  request: AgentPermissionRequest,
+): PaseoPermissionRequest {
+  const actions = normalizePermissionActions(request.actions);
+  const questions = normalizePermissionQuestions(request);
+  const suggestions = normalizePermissionSuggestions(request.suggestions);
+  const unsupportedReason =
+    request.kind === "question"
+      ? questions.reason
+      : request.actions && request.actions.length > 0 && actions.length === 0
+        ? "unsupported-actions"
+        : request.suggestions &&
+            request.suggestions.length > 0 &&
+            suggestions.length !== request.suggestions.length
+          ? "unsupported-suggestions"
+          : null;
+  return {
+    id: request.id,
+    provider: request.provider,
+    name: request.name,
+    kind: request.kind,
+    title: boundedText(request.title),
+    description: boundedText(request.description),
+    detail: permissionDetail(request.detail),
+    actions:
+      request.kind === "question"
+        ? []
+        : request.actions && request.actions.length > 0
+          ? actions
+          : DEFAULT_PERMISSION_ACTIONS,
+    suggestions,
+    questions: questions.values,
+    responseSeed: questions.seed,
+    unsupportedReason,
+  };
+}
+
+function normalizePermissionActions(
+  raw: AgentPermissionRequest["actions"],
+): readonly PaseoPermissionAction[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const result: PaseoPermissionAction[] = [];
+  for (const action of raw) {
+    if (!nonEmpty(action.id) || !nonEmpty(action.label) || seen.has(action.id))
+      return [];
+    seen.add(action.id);
+    result.push({
+      id: action.id,
+      label: action.label,
+      behavior: action.behavior,
+      variant: action.variant ?? null,
+      intent: action.intent ?? null,
+      explicit: true,
+    });
+  }
+  return result;
+}
+
+function normalizePermissionQuestions(request: AgentPermissionRequest): {
+  values: readonly PaseoPermissionQuestion[];
+  seed: Readonly<Record<string, unknown>> | null;
+  reason: string | null;
+} {
+  if (request.kind !== "question")
+    return { values: [], seed: null, reason: null };
+  if (!QUESTION_PROVIDERS.has(request.provider))
+    return { values: [], seed: null, reason: "unsupported-question-provider" };
+  const raw = record(request.input)?.questions;
+  if (!Array.isArray(raw) || raw.length === 0)
+    return { values: [], seed: null, reason: "unsupported-question-shape" };
+  const values: PaseoPermissionQuestion[] = [];
+  const seedQuestions: Record<string, unknown>[] = [];
+  const headers = new Set<string>();
+  for (let questionIndex = 0; questionIndex < raw.length; questionIndex++) {
+    const question = record(raw[questionIndex]);
+    if (!question) return unsupportedQuestions();
+    const header = strictText(question.header);
+    const prompt = strictText(question.question);
+    if (
+      !header ||
+      !prompt ||
+      headers.has(header) ||
+      !Array.isArray(question.options)
+    )
+      return unsupportedQuestions();
+    if (question.isSecret === true)
+      return unsupportedQuestions("secret-question");
+    headers.add(header);
+    const options: Array<{
+      id: string;
+      label: string;
+      description: string | null;
+    }> = [];
+    const seedOptions: Record<string, unknown>[] = [];
+    const labels = new Set<string>();
+    for (
+      let optionIndex = 0;
+      optionIndex < question.options.length;
+      optionIndex++
+    ) {
+      const option = record(question.options[optionIndex]);
+      const label = strictText(option?.label);
+      if (!option || !label || labels.has(label)) return unsupportedQuestions();
+      labels.add(label);
+      const description = boundedText(option.description);
+      options.push({ id: String(optionIndex), label, description });
+      seedOptions.push({ label, ...(description ? { description } : {}) });
+    }
+    const allowOther =
+      question.allowOther === true || question.isOther === true;
+    const allowEmpty = question.allowEmpty === true;
+    const placeholder = boundedText(question.placeholder);
+    const id = strictText(question.id) ?? String(questionIndex);
+    values.push({
+      id,
+      header,
+      prompt,
+      options,
+      multiSelect: question.multiSelect === true,
+      allowOther,
+      allowEmpty,
+      placeholder,
+    });
+    seedQuestions.push({
+      ...(strictText(question.id) ? { id: question.id } : {}),
+      header,
+      question: prompt,
+      options: seedOptions,
+      ...(question.multiSelect === true ? { multiSelect: true } : {}),
+      ...(question.allowOther === true ? { allowOther: true } : {}),
+      ...(question.isOther === true ? { isOther: true } : {}),
+      ...(allowEmpty ? { allowEmpty: true } : {}),
+      ...(placeholder ? { placeholder } : {}),
+      ...(strictText(question.dismissLabel)
+        ? { dismissLabel: question.dismissLabel }
+        : {}),
+    });
+  }
+  return { values, seed: { questions: seedQuestions }, reason: null };
+}
+
+function unsupportedQuestions(reason = "unsupported-question-shape") {
+  return { values: [], seed: null, reason } as const;
+}
+
+function normalizePermissionSuggestions(
+  raw: AgentPermissionRequest["suggestions"],
+): readonly PaseoPermissionSuggestion[] {
+  if (!raw) return [];
+  return raw.flatMap((update, index) => {
+    const safe = safeJsonRecord(update);
+    return safe
+      ? [
+          {
+            id: String(index),
+            label: `Suggested permission ${index + 1}`,
+            update: safe,
+          },
+        ]
+      : [];
+  });
+}
+
+function permissionDetail(
+  detail: AgentPermissionRequest["detail"],
+): Readonly<{ type: string; truncated: boolean }> | null {
+  const value = record(detail);
+  return value && nonEmpty(value.type)
+    ? { type: value.type, truncated: JSON.stringify(detail).length > 2_000 }
+    : null;
+}
+
+function safeJsonRecord(
+  value: unknown,
+): Readonly<Record<string, unknown>> | null {
+  try {
+    const encoded = JSON.stringify(value);
+    if (encoded.length > 16_384) return null;
+    const parsed: unknown = JSON.parse(encoded);
+    return record(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function strictText(value: unknown): string | null {
+  return nonEmpty(value) && value === value.trim() ? value : null;
+}
+
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function boundedText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 500) : null;
 }
 
 function normalizeHost(
