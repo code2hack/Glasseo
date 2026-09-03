@@ -16,12 +16,12 @@ import {
   reduceTextEditor,
   resetTextTransientState,
 } from "../src/draft/text/reducer";
-import { tokenizeText } from "../src/draft/text/tokenize";
+import { graphemeBoundaries, tokenizeText } from "../src/draft/text/tokenize";
 import type { SemanticInput } from "../src/native/semanticInput";
 
 test("tokenizer preserves Unicode words and emits grapheme punctuation", () => {
   const text =
-    "don't snake_case rock’n’roll foo' bar-zip 中文 Cafe\u0301 👩🏽‍💻 🇸🇬 1️⃣!";
+    "don't snake_case rock’n’roll foo' bar-zip 中文 \u{11f04}1 foo\u203fbar Cafe\u0301 👩🏽‍💻 🇸🇬 1️⃣!";
   assert.deepEqual(
     tokenizeText(text).map(({ kind, text }) => [kind, text]),
     [
@@ -34,6 +34,8 @@ test("tokenizer preserves Unicode words and emits grapheme punctuation", () => {
       ["punctuation", "-"],
       ["word", "zip"],
       ["word", "中文"],
+      ["word", "\u{11f04}1"],
+      ["word", "foo\u203fbar"],
       ["word", "Cafe\u0301"],
       ["punctuation", "👩🏽‍💻"],
       ["punctuation", "🇸🇬"],
@@ -59,6 +61,38 @@ test("all offsets re-anchor without splitting surrogate or combining sequences",
   });
   const inserted = insertCommittedText(text, emoji.start + 1, "ok ");
   assert.equal(inserted.text, "a ok 👩🏽‍💻 Cafe\u0301!");
+});
+
+test("grapheme boundaries keep decomposed Hangul and Indic conjuncts atomic", () => {
+  for (const text of [
+    "\u1100\u1161",
+    "\u0915\u094d\u0937",
+    "\u0995\u09cd\u09b7",
+    "\u0a95\u0acd\u0ab7",
+    "\u0b15\u0b4d\u0b37",
+    "\u0c15\u0c4d\u0c37",
+    "\u0d15\u0d4d\u0d37",
+  ])
+    assert.deepEqual(graphemeBoundaries(text), [0, text.length]);
+  assert.deepEqual(normalizeTextRange("\u1100\u1161", 1, 1), {
+    start: 0,
+    end: 0,
+  });
+  assert.deepEqual(normalizeTextRange("\u0915\u094d\u0937", 2, 2), {
+    start: 0,
+    end: 0,
+  });
+  assert.deepEqual(
+    graphemeBoundaries("\u0915\u093c\u200d\u094d\u0924"),
+    [0, 5],
+  );
+  assert.deepEqual(graphemeBoundaries("a\u200db"), [0, 2, 3]);
+  assert.deepEqual(graphemeBoundaries("a\u200c"), [0, 2]);
+  assert.deepEqual(graphemeBoundaries("\n\u0301"), [0, 1, 2]);
+  assert.deepEqual(graphemeBoundaries("\u0600a"), [0, 2]);
+  assert.deepEqual(graphemeBoundaries("\u2701\u200d\u2701"), [0, 3]);
+  assert.deepEqual(graphemeBoundaries("\uff76\uff9e"), [0, 2]);
+  assert.deepEqual(graphemeBoundaries("\u0e01\u0e33"), [0, 2]);
 });
 
 test("movement clamps, selection ranges are inclusive, and dw is exact", () => {

@@ -101,12 +101,37 @@ test("Draft Text renders stable safe tokens and routes only the accepted grammar
   requests = ["request"];
   view.update(context(key));
   await tick();
+  await controller.appendImageRefs([
+    {
+      id: "image",
+      token: "token",
+      mimeType: "image/jpeg",
+      capturedAt: 1,
+    },
+  ]);
+  await tick();
   assert.equal(
     textUnits.children.find(({ textContent }) => textContent === "one"),
     stable,
   );
 
+  const requestUnit = list.children.find(
+    ({ dataset }) => dataset.area === "request",
+  )!.children[1]!.children[0]!;
+  const imageUnit = list.children.find(
+    ({ dataset }) => dataset.area === "images",
+  )!.children[1]!.children[0]!;
+  for (const unit of [requestUnit, imageUnit, ...textUnits.children])
+    unit.scrollCalls = 0;
+
   assert.equal(view.handleInput(input("DOWN", "BEGIN", 501)), true);
+  await tick();
+  assert.equal(requestUnit.scrollCalls, 0);
+  assert.equal(imageUnit.scrollCalls, 0);
+  assert.equal(
+    textUnits.children.some(({ scrollCalls }) => scrollCalls > 0),
+    true,
+  );
   assert.equal(view.handleInput(input("PRIMARY", "SHORT", 502)), true);
   assert.equal(view.handleInput(input("DOWN", "BEGIN", 503)), true);
   await tick();

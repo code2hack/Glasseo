@@ -6,6 +6,7 @@ import {
 import { DraftController } from "../controller";
 import { IndexedDbDraftStorage } from "../storage";
 import { DraftDestinationBody } from "../view";
+import { graphemeBoundaries, tokenizeText } from "./tokenize";
 
 declare global {
   interface Window {
@@ -19,7 +20,8 @@ declare global {
 
 const key = { serverId: "text-acceptance", agentId: "unicode-agent" };
 const requestIds = ["private-request"];
-const fixture = "alpha,  beta\nCafe\u0301 👩🏽‍💻 <b>";
+const longWord = "antidisestablishmentarianism".repeat(4);
+const fixture = `alpha,  beta\nCafe\u0301 👩🏽‍💻 <b> ${longWord}`;
 const physicalKey = { serverId: "text-physical", agentId: "joy-con" };
 const physicalFixture = "one two three four five";
 const physicalSequence = [
@@ -84,10 +86,13 @@ window.__glasseoDraftTextAcceptance = {
     view.handleInput(input("SECONDARY", "LONG", 7));
     await tick();
     const cut =
-      controller.snapshot().session?.record.text === "alpha\nCafe\u0301 👩🏽‍💻 <b>";
+      controller.snapshot().session?.record.text ===
+      `alpha\nCafe\u0301 👩🏽‍💻 <b> ${longWord}`;
     view.handleInput(input("SECONDARY", "LONG", 8));
     await tick();
-    const dw = controller.snapshot().session?.record.text === "alpha\n👩🏽‍💻 <b>";
+    const dw =
+      controller.snapshot().session?.record.text ===
+      `alpha\n👩🏽‍💻 <b> ${longWord}`;
     const beforeDouble = controller.snapshot().session?.record.text;
     const doubleConsumed = view.handleInput(input("SECONDARY", "DOUBLE", 9));
     const doublePreserved =
@@ -140,6 +145,22 @@ window.__glasseoDraftTextAcceptance = {
       leavingCleared,
       stableToken: alpha !== undefined && alpha === stableAlpha,
       noHtmlElement: root.querySelector("b") === null,
+      unicodeAtomic: [
+        ["\u1100\u1161", "0,2"],
+        ["\u0915\u093c\u200d\u094d\u0924", "0,5"],
+        ["a\u200db", "0,2,3"],
+        ["a\u200c", "0,2"],
+        ["\n\u0301", "0,1,2"],
+        ["\u0600a", "0,2"],
+        ["\u2701\u200d\u2701", "0,3"],
+        ["\uff76\uff9e", "0,2"],
+        ["\u0e01\u0e33", "0,2"],
+      ].every(
+        ([text, expected]) => graphemeBoundaries(text).join() === expected,
+      ),
+      unicodeWords:
+        tokenizeText("\u{11f04}1")[0]?.kind === "word" &&
+        tokenizeText("foo\u203fbar")[0]?.text === "foo\u203fbar",
       persistedRevision: persisted.revision,
       restartMatches:
         restart.record.text === persisted.text &&

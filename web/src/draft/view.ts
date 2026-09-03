@@ -240,7 +240,9 @@ function unitsFor(
       selected: false,
       option: true,
       empty: false,
-      scroll: id === session.record.cursors.requestId,
+      scroll:
+        session.record.activeArea === "request" &&
+        id === session.record.cursors.requestId,
     }));
   if (area === "images")
     return session.record.images.map((image, index) => ({
@@ -250,7 +252,9 @@ function unitsFor(
       selected: false,
       option: true,
       empty: false,
-      scroll: image.id === session.record.cursors.imageId,
+      scroll:
+        session.record.activeArea === "images" &&
+        image.id === session.record.cursors.imageId,
     }));
   const focus = unitAtOffset(
     session.record.text,
@@ -274,6 +278,7 @@ function unitsFor(
     option: segment.kind !== "whitespace",
     empty: segment.start === segment.end,
     scroll:
+      session.record.activeArea === "text" &&
       segment.kind !== "whitespace" &&
       segment.start === focus &&
       (segment.cursor || segment.selected),

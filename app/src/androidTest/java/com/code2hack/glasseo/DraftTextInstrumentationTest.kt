@@ -49,6 +49,8 @@ class DraftTextInstrumentationTest {
             assertTrue(result.getBoolean("leavingCleared"))
             assertTrue(result.getBoolean("stableToken"))
             assertTrue(result.getBoolean("noHtmlElement"))
+            assertTrue(result.getBoolean("unicodeAtomic"))
+            assertTrue(result.getBoolean("unicodeWords"))
             assertTrue(result.getInt("persistedRevision") > 0)
             assertTrue(result.getBoolean("restartMatches"))
             assertTrue(result.getBoolean("restartTransientReset"))
