@@ -78,6 +78,7 @@ export class DirectoryCoordinator {
       orderedAgents,
       current: this.current,
       destination: this.current ? "agent" : "config",
+      restoring: this.restoring,
     };
   }
 

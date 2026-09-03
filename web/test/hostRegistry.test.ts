@@ -520,6 +520,16 @@ class FakeRuntime implements HostRuntime {
       pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
     };
   }
+  async getAgent() {
+    return null;
+  }
+  async listUsage() {
+    return {
+      requestId: "usage",
+      fetchedAt: "2026-09-03T00:00:00Z",
+      providers: [],
+    };
+  }
   subscribeDirectory(_listener: (event: PaseoDirectoryEvent) => void) {
     void _listener;
     return () => {};

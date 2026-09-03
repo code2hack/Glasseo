@@ -5,6 +5,7 @@ import {
   agentKey,
   compositeKey,
   isEligibleAgent,
+  validateCachedHostDirectory,
 } from "../src/directory/normalize";
 import {
   getAgentPlacement,
@@ -496,6 +497,11 @@ test("validated offline cache round-trip restores an eligible last selection", a
   assert.equal(hostSyncState(directory.snapshot(), "alpha")?.stale, true);
 });
 
+test("version one directory caches are deterministically invalidated", () => {
+  const old = { ...cached("alpha", []), schemaVersion: 1 };
+  assert.throws(() => validateCachedHostDirectory(old, "alpha"));
+});
+
 test("corrupt host cache is isolated and delayed older writes cannot win", async () => {
   const storage = new MemoryDirectoryStorage();
   const putBarrier = deferred<void>();
@@ -606,6 +612,16 @@ class FakeDirectoryRuntime implements HostDirectoryRuntime {
     const page = this.agentPages.get(cursor);
     if (!page) throw new Error(`missing agent page ${cursor}`);
     return page;
+  }
+  async getAgent() {
+    return null;
+  }
+  async listUsage() {
+    return {
+      requestId: "usage",
+      fetchedAt: "2026-09-03T00:00:00Z",
+      providers: [],
+    };
   }
   subscribeDirectory(listener: (event: PaseoDirectoryEvent) => void) {
     this.listeners.add(listener);
@@ -875,7 +891,7 @@ function cached(
     ],
   ]);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     serverId,
     revision: 1,
     lastSuccessfulSyncAt: 1,
@@ -892,6 +908,13 @@ function cached(
       title: agent.title,
       provider: agent.provider,
       model: agent.model,
+      thinkingOptionId:
+        agent.effectiveThinkingOptionId ?? agent.thinkingOptionId ?? null,
+      currentModeId: agent.currentModeId,
+      availableModes: agent.availableModes.map(({ id, label }) => ({
+        id,
+        label,
+      })),
       status: agent.status,
       activeTurn: agent.activeTurn ?? null,
       createdAt: agent.createdAt,
