@@ -150,9 +150,10 @@ function resolveFocus(
 ): ConfigRowId {
   const visible = new Set(next.rows.map(({ id }) => id));
   if (requested && visible.has(requested)) return requested;
-  let ancestor = requested
-    ? previous.projection.allRows.get(requested)?.parentId
-    : null;
+  let ancestor =
+    requested && next.allRows.has(requested)
+      ? previous.projection.allRows.get(requested)?.parentId
+      : null;
   while (ancestor) {
     if (visible.has(ancestor)) return ancestor;
     ancestor = previous.projection.allRows.get(ancestor)?.parentId ?? null;

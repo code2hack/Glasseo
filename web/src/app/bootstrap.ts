@@ -15,6 +15,9 @@ import { TimelineCoordinator } from "../timeline/coordinator";
 import { IndexedDbTimelineStorage } from "../timeline/storage";
 import { bindTimeline } from "../timeline/binding";
 import type { TimelineStorage } from "../timeline/types";
+import { ConfigController } from "../config/controller";
+import { IndexedDbConfigStorage } from "../config/storage";
+import { ConfigDestinationBody } from "../config/view";
 
 export function createTimelineComposition(
   directory: Pick<DirectoryCoordinator, "snapshot" | "subscribe">,
@@ -42,10 +45,17 @@ export async function bootstrap(): Promise<void> {
     new IndexedDbDirectoryStorage(),
   );
   const pager = new AgentPagerController(directory);
+  const config = new ConfigController(
+    directory,
+    new IndexedDbConfigStorage(),
+    (key) => pager.openAgent(key),
+  );
   const metadata = new AgentHeaderMetadataController(registry, directory);
   const timelineComposition = createTimelineComposition(directory, registry);
   const timeline = timelineComposition.coordinator;
-  const view = new AgentShellView(root, pager, directory, metadata, timeline);
+  const view = new AgentShellView(root, pager, directory, metadata, timeline, {
+    config: () => new ConfigDestinationBody(config),
+  });
   const inputRouter = new InputRouter(view, pager);
   view.render();
   const disposeDiagnostics = setupDiagnostics(pairing);
@@ -64,6 +74,7 @@ export async function bootstrap(): Promise<void> {
       disposeSemanticInput();
       disposeDiagnostics();
       view.dispose();
+      config.dispose();
       timelineComposition.dispose();
       metadata.dispose();
       pager.dispose();
@@ -72,6 +83,7 @@ export async function bootstrap(): Promise<void> {
     { once: true },
   );
   postNative({ type: "hello" });
+  void config.restore();
   void directory.restore();
   const result = await runWebViewProbe();
   postNative({ type: "probe-result", ...result });

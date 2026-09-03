@@ -1,5 +1,8 @@
 import type { DirectoryCoordinator } from "../directory/coordinator";
-import type { GlobalAgentDirectorySnapshot } from "../directory/types";
+import type {
+  AgentKey,
+  GlobalAgentDirectorySnapshot,
+} from "../directory/types";
 import type { SemanticInput } from "../native/semanticInput";
 import {
   reduceConfig,
@@ -29,6 +32,7 @@ export class ConfigController {
   private lastUpdatedAt = 0;
   private pendingRestore: ReturnType<typeof validateStoredConfigUi> | null =
     null;
+  private activatedAgent: AgentKey | null = null;
 
   constructor(
     private readonly directory: ConfigDirectorySource,
@@ -57,13 +61,20 @@ export class ConfigController {
       } else {
         this.stateValue = reprojectConfigState(this.stateValue, snapshot);
       }
-      if (this.stateValue.revision !== revision) this.persist();
+      if (this.stateValue.revision !== revision) {
+        this.mutation++;
+        this.persist();
+      }
       this.publish();
     });
   }
 
   snapshot(): ConfigState {
     return this.stateValue;
+  }
+
+  lastActivatedAgent(): AgentKey | null {
+    return this.activatedAgent ? { ...this.activatedAgent } : null;
   }
 
   subscribe(listener: (state: ConfigState) => void): () => void {
@@ -107,7 +118,8 @@ export class ConfigController {
     this.stateValue = transition.state;
     this.mutation++;
     this.pendingRestore = null;
-    if (transition.activate) this.activateAgent(transition.activate);
+    if (transition.activate && this.activateAgent(transition.activate))
+      this.activatedAgent = { ...transition.activate };
     if (this.stateValue.revision !== revision) this.persist();
     this.publish();
     return true;

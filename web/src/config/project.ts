@@ -195,7 +195,7 @@ function appendHost(
     (agent) => !placedAgents.has(agent.agentId),
   );
   if (unplaced.length > 0) {
-    const fallbackProjectId = rowId("project", host.serverId, "$unplaced");
+    const fallbackProjectId = rowId("fallback-project", host.serverId);
     add(
       rows,
       fallbackProjectId,
@@ -207,7 +207,7 @@ function appendHost(
       true,
       expanded,
     );
-    const fallbackWorkspaceId = rowId("workspace", host.serverId, "$unplaced");
+    const fallbackWorkspaceId = rowId("fallback-workspace", host.serverId);
     add(
       rows,
       fallbackWorkspaceId,
@@ -223,6 +223,18 @@ function appendHost(
       appendAgent(rows, agent, fallbackWorkspaceId, 4, expanded),
     );
   }
+  if (orderedAgents(directory, host.serverId).length === 0)
+    add(
+      rows,
+      rowId("empty", host.serverId, "agents"),
+      hostId,
+      "empty",
+      2,
+      "No eligible Agents",
+      null,
+      false,
+      expanded,
+    );
 }
 
 function appendAgent(

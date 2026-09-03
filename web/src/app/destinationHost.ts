@@ -12,6 +12,7 @@ export interface DestinationBody {
   mount(root: HTMLElement): void;
   update(context: DestinationContext): void;
   handleInput(input: SemanticInput): boolean;
+  diagnostics?(): unknown;
   dispose(): void;
 }
 
@@ -61,6 +62,15 @@ export class DestinationHost {
     } catch {
       this.rendererLossCount++;
       return false;
+    }
+  }
+
+  diagnostics(): unknown | null {
+    try {
+      return this.active?.diagnostics?.() ?? null;
+    } catch {
+      this.rendererLossCount++;
+      return null;
     }
   }
 

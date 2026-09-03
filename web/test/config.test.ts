@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AgentPagerController,
+  initialPagerState,
   openAgentFromConfig,
+  reconcilePagerState,
+  reduceAgentPager,
   type AgentDirectorySource,
 } from "../src/agent-pages/pager";
 import {
@@ -22,6 +25,7 @@ import {
   initialConfigState,
   reduceConfig,
   reprojectConfigState,
+  restoreConfigState,
 } from "../src/config/reducer";
 import { validateStoredConfigUi } from "../src/config/storage";
 import {
@@ -121,6 +125,10 @@ test("Config projection is deterministic, composite, collapses only ordinary wor
     projection.rows.some(({ label }) => label === "Other"),
     true,
   );
+  assert.notEqual(
+    rowId("fallback-project", alpha.serverId),
+    rowId("project", alpha.serverId, "$unplaced"),
+  );
   assert.deepEqual(projection.counts, {
     hosts: 2,
     projects: 2,
@@ -133,6 +141,16 @@ test("Config projection is deterministic, composite, collapses only ordinary wor
   assert.equal(collapsesWorkspace(ordinary, [ordinary]), true);
   assert.equal(collapsesWorkspace(checkout, [checkout]), false);
   assert.equal(collapsesWorkspace(ordinary, [ordinary], true), false);
+
+  const empty = host("empty", "Empty");
+  const emptyProjection = projectConfig(
+    snapshot([empty], []),
+    new Set([WORKSPACES_SECTION_ID, rowId("host", empty.serverId)]),
+  );
+  assert.equal(
+    emptyProjection.rows.some(({ label }) => label === "No eligible Agents"),
+    true,
+  );
 });
 
 test("Config reducer handles terminal controls once, clamps movement, folds, activates, and re-anchors live focus", () => {
@@ -167,13 +185,163 @@ test("Config reducer handles terminal controls once, clamps movement, folds, act
 
   const removed = snapshot([], []);
   const reprojected = reprojectConfigState(state, removed);
-  assert.notEqual(reprojected.focusedRowId, state.focusedRowId);
-  assert.equal(
-    reprojected.projection.rows.some(
-      ({ id }) => id === reprojected.focusedRowId,
-    ),
-    true,
+  assert.equal(reprojected.focusedRowId, HID_KEYS_SECTION_ID);
+});
+
+test("Config reprojection retains focus through live host and Agent updates", () => {
+  const directory = directoryFixture();
+  let state = initialConfigState(directory);
+  for (const event of [
+    input("DOWN", 1),
+    input("PRIMARY", 2),
+    input("DOWN", 3),
+    input("PRIMARY", 4),
+    input("DOWN", 5),
+  ])
+    state = reduceConfig(state, directory, event).state;
+  const focused = state.focusedRowId;
+  const changedHost = {
+    ...directory.hosts.get("alpha")!,
+    status: "offline" as const,
+    stale: true,
+    profile: { ...directory.hosts.get("alpha")!.profile, hostname: "Renamed" },
+  };
+  const changed = {
+    ...directory,
+    hosts: new Map([["alpha", changedHost]]),
+    orderedAgents: [{ ...directory.orderedAgents[0]!, title: "Renamed Agent" }],
+  };
+  state = reprojectConfigState(state, changed);
+  assert.equal(state.focusedRowId, focused);
+  assert.equal(state.projection.counts.offline, 1);
+  state = reprojectConfigState(state, directory);
+  assert.equal(state.focusedRowId, focused);
+});
+
+test("Config reprojection retains inserted focus, climbs folds, and falls forward then back on removal", () => {
+  const directory = directoryFixture();
+  const hostValue = directory.hosts.get("alpha")!;
+  const current = directory.orderedAgents[0]!;
+  const inserted = {
+    ...current,
+    agentId: "agent-new",
+    updatedAt: "2026-09-03T04:00:00Z",
+  };
+  const expanded = [
+    WORKSPACES_SECTION_ID,
+    rowId("host", "alpha"),
+    rowId("project", "alpha", "project-a"),
+  ];
+  let state = restoreConfigState(
+    initialConfigState(directory),
+    directory,
+    expanded,
+    rowId("agent", "alpha", "agent-a"),
+    0,
   );
+  const withInsertion = {
+    ...directory,
+    hosts: new Map([
+      [
+        "alpha",
+        {
+          ...hostValue,
+          agents: new Map([
+            [current.agentId, current],
+            [inserted.agentId, inserted],
+          ]),
+        },
+      ],
+    ]),
+    orderedAgents: [inserted, current],
+  };
+  state = reprojectConfigState(state, withInsertion);
+  assert.equal(state.focusedRowId, rowId("agent", "alpha", "agent-a"));
+
+  state = restoreConfigState(
+    state,
+    withInsertion,
+    [WORKSPACES_SECTION_ID, rowId("host", "alpha")],
+    rowId("agent", "alpha", "agent-a"),
+    state.revision,
+  );
+  assert.equal(state.focusedRowId, rowId("project", "alpha", "project-a"));
+
+  state = restoreConfigState(
+    state,
+    withInsertion,
+    expanded,
+    rowId("agent", "alpha", "agent-new"),
+    state.revision,
+  );
+  state = reprojectConfigState(state, directory);
+  assert.equal(state.focusedRowId, rowId("agent", "alpha", "agent-a"));
+  state = reprojectConfigState(state, snapshot([], []));
+  assert.equal(state.focusedRowId, HID_KEYS_SECTION_ID);
+});
+
+test("Config focus survives host removal/reconnect and pager returns exactly after Agent or empty entry", () => {
+  const alpha = directoryFixture();
+  const betaHost = host("beta", "Beta");
+  const betaProject = project(betaHost, "project-b", "Project B");
+  const betaWorkspace = workspace(
+    betaHost,
+    "workspace-b",
+    betaProject.projectId,
+    "Main",
+    "directory",
+  );
+  const betaAgent = agent(
+    betaHost,
+    "agent-b",
+    betaWorkspace,
+    "2026-09-03T02:00:00Z",
+  );
+  put(betaHost.projects, betaProject.projectId, betaProject);
+  put(betaHost.workspaces, betaWorkspace.workspaceId, betaWorkspace);
+  put(betaHost.agents, betaAgent.agentId, betaAgent);
+  const both = snapshot(
+    [alpha.hosts.get("alpha")!, betaHost],
+    [...alpha.orderedAgents, betaAgent],
+  );
+  const betaRow = rowId("agent", "beta", "agent-b");
+  const expanded = [
+    WORKSPACES_SECTION_ID,
+    rowId("host", "beta"),
+    rowId("project", "beta", "project-b"),
+  ];
+  let config = restoreConfigState(
+    initialConfigState(both),
+    both,
+    expanded,
+    betaRow,
+    0,
+  );
+  config = reprojectConfigState(config, snapshot([betaHost], [betaAgent]));
+  assert.equal(config.focusedRowId, betaRow);
+  config = reprojectConfigState(config, both);
+  assert.equal(config.focusedRowId, betaRow);
+
+  const key = { serverId: "beta", agentId: "agent-b" };
+  const selected = { ...both, current: key, destination: "agent" as const };
+  let pager = initialPagerState(selected);
+  pager = reduceAgentPager(pager, selected, {
+    ...input("COMMAND", 1),
+    action: "LONG",
+  }).state;
+  const returned = reduceAgentPager(pager, selected, input("COMMAND", 2));
+  assert.deepEqual(returned.select, key);
+
+  const empty = snapshot([], []);
+  pager = reconcilePagerState(initialPagerState(empty), selected);
+  assert.deepEqual(pager.destination, { kind: "config", returnTo: null });
+  const arrived = reduceAgentPager(pager, selected, input("COMMAND", 3));
+  assert.deepEqual(arrived.select, key);
+  assert.deepEqual(arrived.state.destination, {
+    kind: "agent",
+    key,
+    pane: "timeline",
+  });
 });
 
 test("Config controller fences delayed restore and writes and isolates observers", async () => {
@@ -213,6 +381,30 @@ test("Config controller fences delayed restore and writes and isolates observers
   assert.deepEqual(activations, []);
   await tick();
   assert.equal(storage.writes.at(-1)?.updatedAt, 42);
+});
+
+test("Config controller fences a delayed restore after directory re-anchors focus", async () => {
+  const source = new FakeDirectory(directoryFixture());
+  const delayed = deferred<unknown | null>();
+  const controller = new ConfigController(
+    source,
+    new MemoryStorage(delayed.promise),
+    () => false,
+  );
+  for (const event of [
+    input("DOWN", 1),
+    input("PRIMARY", 2),
+    input("DOWN", 3),
+    input("PRIMARY", 4),
+    input("DOWN", 5),
+  ])
+    controller.handle(event);
+  const restore = controller.restore();
+  source.emit(snapshot([], []));
+  const reanchored = controller.snapshot().focusedRowId;
+  delayed.resolve(stored([HOSTS_SECTION_ID], HOSTS_SECTION_ID, 0));
+  await restore;
+  assert.equal(controller.snapshot().focusedRowId, reanchored);
 });
 
 test("Config controller restores validated fold/focus state and activates exact composite Agent", async () => {
