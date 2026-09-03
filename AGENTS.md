@@ -53,8 +53,10 @@ The Project Owner is the final human authority. The Project Owner:
 - creates the Manager's local Codex thread;
 - gives the Manager the exact URL of the ChatGPT CTO conversation;
 - chooses the hosts, Codex profiles, and maximum Worker concurrency;
-- handles human gates and ALARM events;
-- provides or approves the alarm mechanism recorded in `DEV.md`.
+- handles remote governance gates and ALARM decisions;
+- keeps the target RG available to the approved development host as a standing environment arrangement, but is not part of the device-operation or test loop;
+- is never expected to touch, unlock, pair, reconnect, wear, move, press controls on, scan with, or otherwise physically operate the RG or any test peripheral;
+- provides or approves the remote notification mechanism recorded in `DEV.md`.
 
 ### 2.2 ChatGPT CTO
 
@@ -89,6 +91,8 @@ The Manager is one local Codex thread created by the Project Owner. The Manager:
 - waits until every ticket in that batch is marked by the CTO as `PLANNED`, `BLOCKED`, or `REMOVED_FROM_BATCH`;
 - creates Workers sequentially, one spawn operation at a time, for the planned tickets until the Owner-selected concurrency limit is reached;
 - assigns exactly one issue to each Worker;
+- owns coordination of unattended RG verification: device setup, permissions, lifecycle, UI navigation, input, recovery, debugging, and evidence collection must be performed through ADB or an automated on-device test harness;
+- never converts a device, peripheral, or test-automation problem into a request for Project Owner physical action;
 - creates the pull request after a Worker commits and pushes its branch;
 - asks the CTO to review the pull request;
 - re-dispatches correction work to the same Worker when review requests changes;
@@ -106,7 +110,10 @@ A Worker is a Codex thread created by the Manager for exactly one GitHub issue. 
 - implements only the assigned ticket and its accepted plan;
 - immediately after every implementation or correction pass, performs an ablation study of its own changes to simplify the code: systematically attempts to remove, merge, inline, reuse, or collapse newly introduced code, abstractions, state, dependencies, branches, compatibility shims, and test-only seams; keeps complexity only when it is necessary for accepted behavior, platform compatibility, verification, or clear maintainability; and reruns affected tests after simplification;
 - builds, tests, verifies, and debugs according to the current remote-`main` `DEV.md`;
-- reports blockers, ambiguity, dependency conflicts, article-change needs, and human gates to the Manager;
+- performs every RG-side test interaction through ADB or an automated on-device test harness, including setup, permission handling, UI navigation, input injection, lifecycle control, debugging, recovery, and evidence capture;
+- never asks the Project Owner to touch, unlock, pair, reconnect, wear, move, press controls on, scan with, or otherwise physically operate the RG or a peripheral;
+- when an acceptance claim cannot actually be automated, does not substitute a manual gate or claim `PASS`: it records the exact unautomatable condition, attempted automated paths, evidence obtained, and current safe state, then reports that limitation to the Manager for remote Owner/CTO disposition;
+- reports blockers, ambiguity, dependency conflicts, article-change needs, remote governance gates, and device-automation limitations to the Manager;
 - commits and pushes its completed work to the assigned remote branch;
 - reports the commit, tests, verification evidence, ablation/simplification result, remaining risks, and any deviations to the Manager.
 
@@ -194,7 +201,7 @@ Every Worker spawn prompt includes:
 - relevant acceptance criteria;
 - instruction to fetch and use the current remote-`main` `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` as read-only project articles;
 - required build, test, and verification commands from `DEV.md`;
-- human-gate and reporting procedure;
+- unattended-device automation procedure, remote-governance-gate procedure, and unautomatable-acceptance reporting procedure;
 - `$ask-codex` reply route to the Manager thread.
 
 **Mandatory Manager↔Worker verification:** for every direct Manager↔Worker work message, the sender MUST:
@@ -210,39 +217,83 @@ Worker reports begin with the Worker identity. The Manager records important Wor
 
 ### 4.3 Manager ↔ Project Owner
 
-The Manager talks directly to the Project Owner for approvals, missing choices, human gates, and ALARM events.
+The Manager talks directly to the Project Owner for approvals, missing choices, remote governance gates, accepted limitations, and ALARM events.
 
-`DEV.md` records the approved alarm command or notification channel. An ALARM message includes:
+The Project Owner participates remotely. Device interaction is never routed to the Owner.
+
+`DEV.md` records the approved remote alarm/notification channel. An ALARM message includes:
 
 - the event;
 - the blocked issue or Worker;
-- the exact owner action required;
+- the exact remote Owner judgment or authorization required;
 - the current safe state of the repository, devices, and running processes.
 
-Workers report human gates to the Manager. The Manager, not the Worker, alarms the Project Owner.
+The requested Owner action in an ALARM must never be a physical RG or peripheral action.
 
-## 5. Human gates and ALARM events
+Workers report remote governance gates and device-automation limitations to the Manager. The Manager, not the Worker, communicates them to the Project Owner.
 
-A human gate is any step that requires the Project Owner's direct judgment or physical action, including:
+## 5. Remote governance gates, unattended device automation, and ALARM events
+
+The target RG is an unattended development and acceptance device attached to the approved development host. The Project Owner is available for remote judgment and authorization, not physical device operation.
+
+### 5.1 Unattended device rule
+
+All RG and peripheral interaction required by development, testing, debugging, recovery, and acceptance must be performed through ADB or an automated on-device test harness.
+
+This includes, where applicable:
+
+- install, uninstall, launch, stop, restart, process kill, and lifecycle control;
+- runtime permissions, app-ops, settings, and test-state preparation;
+- UI navigation and focus management;
+- semantic, key, touch, motion, and other test input;
+- Bluetooth/HID state inspection and any automation-supported configuration;
+- QR/test-payload setup;
+- network-state and failure injection;
+- camera, microphone, sensor, storage, and persistence test setup;
+- logs, traces, screenshots, recordings, state inspection, and cleanup;
+- automated recovery after crashes, renderer loss, process death, or failed test setup.
+
+A Worker or Manager must never ask the Project Owner to touch, unlock, pair, reconnect, wear, move, press controls on, scan with, or otherwise physically operate the RG or any peripheral.
+
+A device or peripheral problem is not by itself a human gate.
+
+If bounded automated recovery cannot establish the state required for an acceptance claim, the Worker:
+
+1. stops short of claiming that acceptance result;
+2. records the exact failed prerequisite and automation attempts;
+3. records all partial evidence and the current safe repository/device/process state;
+4. reports the limitation to the Manager.
+
+The Manager then discusses the limitation remotely with the CTO and Project Owner. Possible dispositions include a different automated method, a ticket or plan amendment, an explicitly accepted limitation, a specification decision, or keeping the ticket blocked. The limitation must never be converted into a request for physical Owner action.
+
+### 5.2 Remote governance gates
+
+A human gate exists only when remote human judgment, authorization, or protected information is genuinely required. Examples include:
 
 - changing a frozen product decision or `SPEC.md` behavior;
-- approving or instructing a change to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md` when no prior explicit Owner authority covers the change;
-- changing the Owner-selected host, Worker profile, or maximum Worker concurrency;
-- device unlock, pairing, cable movement, permission dialog, QR scan, or other physical-device action;
-- login, credential, account, or secret handling that automation cannot safely complete;
-- destructive or security-sensitive actions not already approved by the issue plan;
-- an ambiguous requirement that would materially change user-visible behavior;
-- a blocker that requires access or information reserved to the Project Owner.
+- approving or instructing a change to `SPEC.md`, `AGENTS.md`, `DEV.md`, or `MILESTONES.md`;
+- changing the approved host, Worker profile, or maximum concurrency;
+- credential, login, account, signing-key, or secret handling that cannot safely be delegated to automation;
+- destructive or security-sensitive authorization not already covered by the approved plan;
+- ambiguity that would materially change user-visible behavior;
+- accepting an explicit unautomated limitation;
+- release signing, release approval, or final go/no-go judgment.
 
-ALARM events include:
+These gates are resolved remotely. They do not require physical RG operation.
 
-- CTO communication is unavailable;
-- a Worker reaches a human gate;
-- the approved environment or required device becomes unavailable and blocks all useful progress;
-- repository state is unsafe or unexpectedly divergent;
-- a destructive failure risks data, credentials, devices, or the canonical branch.
+### 5.3 ALARM events
 
-Agents preserve the current safe state and wait for owner direction after raising an ALARM.
+ALARM is for situations requiring timely Project Owner judgment or authorization, such as:
+
+- CTO communication remaining unavailable after the documented retries;
+- repository state becoming unsafe or unexpectedly divergent;
+- a destructive or security-sensitive failure;
+- a credential/login/signing gate;
+- a remote governance decision that blocks all safe useful progress.
+
+Ordinary device interaction, device testing, peripheral availability, ADB debugging, automation failures, or inability to execute a device acceptance step are not audible ALARM events. They follow the limitation-reporting procedure in Section 5.1.
+
+Agents preserve the current safe state while awaiting any required remote decision.
 
 ## 6. Planning and issue preparation
 
@@ -260,13 +311,15 @@ Each issue should contain:
 - dependencies;
 - acceptance criteria;
 - verification expectations;
-- known human gates, when applicable.
+- required automated exact-RG verification, when applicable;
+- known automation limitations, when applicable;
+- remote governance gates, when applicable.
 
 ### 6.2 Manager bootstrap
 
 1. The Project Owner creates the Manager's Codex thread.
 2. The Project Owner provides the CTO conversation URL and implementation preferences.
-3. The Manager validates the workspace, toolchains, devices, credentials boundary, build commands, test commands, `$ask-codex` routing, alarm mechanism, and cleanup procedure.
+3. The Manager validates the workspace, toolchains, unattended RG/ADB/test-harness automation, credentials boundary, build commands, test commands, `$ask-codex` routing, remote alarm mechanism, automated recovery, and cleanup procedure.
 4. After explicit Project Owner approval/instruction, the Manager writes or updates the canonical remote-`main` `DEV.md` with verified commands and environment facts.
 
 `DEV.md` should include at least:
@@ -275,10 +328,10 @@ Each issue should contain:
 - supported hosts;
 - toolchain and SDK versions;
 - build, test, lint, formatting, and packaging commands;
-- device, emulator, ADB, network, and relay procedures;
+- unattended device, emulator, ADB/on-device-harness, automated recovery, network, and relay procedures;
 - branch/worktree conventions;
 - Codex thread identity and `$ask-codex` routing conventions;
-- alarm procedure;
+- remote governance-gate and alarm procedure;
 - cleanup and archival procedure;
 - known environment limitations.
 
@@ -311,9 +364,12 @@ For every ticket, the CTO posts a separate role-attributed implementation-plan c
 - files or components likely to change;
 - dependencies and coordination constraints;
 - acceptance criteria;
-- required tests and real-device verification;
-- human gates;
+- required tests and automated exact-RG verification, including the concrete ADB/instrumentation/on-device-harness procedure;
+- known automation limitations and the evidence required when a claim cannot be automated;
+- remote governance gates, if any;
 - explicit scope boundaries.
+
+A CTO implementation plan must not assign physical RG or peripheral operation to the Project Owner. When a product requirement appears to require manual physical acceptance, the plan must instead define an automated ADB/on-device-harness route or explicitly mark the remaining acceptance claim as unautomatable pending remote Owner/CTO disposition.
 
 If planning reveals a new blocker, dependency, conflict, or necessary split, the CTO records it on the relevant issue before dispatch. Each proposed ticket ends planning in exactly one state:
 
@@ -334,7 +390,7 @@ For each `PLANNED` ticket selected for dispatch, the Manager performs these step
 1. Create or confirm the isolated branch or worktree according to `DEV.md`.
 2. Fetch canonical remote `main` and make the current `SPEC.md`, `AGENTS.md`, `DEV.md`, and `MILESTONES.md` available to the Worker as read-only project references.
 3. Spawn exactly one Worker for that issue and record its exact Codex thread ID.
-4. Send the Worker the issue URL, CTO plan comment, assigned host and profile, branch/worktree instructions, required project documents, Manager thread ID, tests, verification requirements, and reporting/human-gate procedure through `$ask-codex`.
+4. Send the Worker the issue URL, CTO plan comment, assigned host and profile, branch/worktree instructions, required project documents, Manager thread ID, tests, automated exact-RG verification requirements, unattended-device rules, remote-governance-gate procedure, unautomatable-acceptance reporting procedure, and Manager reply route through `$ask-codex`.
 5. Verify the complete spawn message is `DELIVERED` and the intended Worker is `RECEIVER_WORKING` according to Section 4.2.
 6. Record the Worker identity, thread ID, and work state on the issue.
 7. Only then proceed to spawn the next planned Worker.
@@ -352,7 +408,7 @@ A Worker follows this loop:
 3. Implement the CTO plan.
 4. **Immediately after implementation, perform an ablation study before final verification.** Challenge every newly introduced abstraction, helper, layer, state field, dependency, branch, compatibility shim, test-only seam, and duplicated path. Attempt to delete it, merge it with an existing path, inline it, reuse an existing primitive, or otherwise reduce it. Keep the simpler version whenever the accepted behavior and necessary platform/test guarantees remain intact. Record what was removed or simplified and briefly justify any substantial complexity that remains.
 5. Run targeted tests affected by the ablation changes, then run the required build, test, verification, and debugging commands from `DEV.md`.
-6. Report any blocker, article-change need, or human gate to the Manager through `$ask-codex`, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work.
+6. Report any blocker, article-change need, remote governance gate, or device-automation limitation to the Manager through `$ask-codex`, and verify both `DELIVERED` and Manager `RECEIVER_WORKING` according to Section 4.2 before ending the turn or continuing other work. Never request physical RG/peripheral action. If an acceptance claim cannot be automated, include the exact limitation, attempted automation, partial evidence, and safe state.
 7. Update implementation and tests until acceptance criteria pass. After every correction implementation pass, repeat the ablation study in step 4 before considering that pass complete.
 8. Before commit/push, fetch remote `main` again, re-check any article changes that affect the work, and ensure the four project articles are absent from the implementation diff.
 9. Commit and push the assigned branch.
@@ -362,6 +418,8 @@ A Worker follows this loop:
    - ablation/simplification summary, including what was removed/simplified and any intentionally retained complexity;
    - commands run and results;
    - real-device or integration evidence;
+   - automated exact-RG procedure used and result, when applicable;
+   - any acceptance claim that could not be automated, with exact limitation and safe state;
    - known limitations or residual risks;
    - deviations from the CTO plan, if any.
 11. Verify both `DELIVERED` and Manager `RECEIVER_WORKING` for the completion report according to Section 4.2 before ending the turn.
