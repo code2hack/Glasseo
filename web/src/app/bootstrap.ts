@@ -18,10 +18,16 @@ import type { TimelineStorage } from "../timeline/types";
 import { ConfigController } from "../config/controller";
 import { IndexedDbConfigStorage } from "../config/storage";
 import { ConfigDestinationBody } from "../config/view";
+import { HostsConfigController } from "../config/hosts/controller";
+import {
+  emptyHostCleanupParticipant,
+  HostCleanupCoordinator,
+} from "../config/hosts/cleanup";
 import { DraftController } from "../draft/controller";
 import { bindDraftLifecycle } from "../draft/lifecycle";
 import { IndexedDbDraftStorage } from "../draft/storage";
 import { DraftDestinationBody } from "../draft/view";
+import { cleanupHostMedia } from "../native/hostMedia";
 
 export function createTimelineComposition(
   directory: Pick<DirectoryCoordinator, "snapshot" | "subscribe">,
@@ -49,18 +55,59 @@ export async function bootstrap(): Promise<void> {
     new IndexedDbDirectoryStorage(),
   );
   const pager = new AgentPagerController(directory);
-  const config = new ConfigController(
-    directory,
-    new IndexedDbConfigStorage(),
-    (key) => pager.openAgent(key),
-  );
   const metadata = new AgentHeaderMetadataController(registry, directory);
   const timelineComposition = createTimelineComposition(directory, registry);
   const timeline = timelineComposition.coordinator;
   const draft = new DraftController(new IndexedDbDraftStorage());
   const disposeDraftLifecycle = bindDraftLifecycle(draft, directory, registry);
+  const hosts = new HostsConfigController(
+    registry,
+    pairing,
+    new HostCleanupCoordinator([
+      {
+        name: "directory",
+        cleanup: (operation) =>
+          directory.cleanupHost(operation.serverId, () => {
+            operation.assertActive();
+            return true;
+          }),
+      },
+      {
+        name: "timeline",
+        cleanup: (operation) =>
+          timeline.deleteHost(operation.serverId, () => {
+            operation.assertActive();
+            return true;
+          }),
+      },
+      {
+        name: "drafts",
+        cleanup: (operation) =>
+          draft.deleteHost(operation.serverId, () => {
+            operation.assertActive();
+            return true;
+          }),
+      },
+      {
+        name: "native-media",
+        cleanup: async (operation) => {
+          operation.assertActive();
+          await cleanupHostMedia(operation.serverId);
+          operation.assertActive();
+        },
+      },
+      emptyHostCleanupParticipant("request-answers"),
+    ]),
+  );
+  const config = new ConfigController(
+    directory,
+    new IndexedDbConfigStorage(),
+    (key) => pager.openAgent(key),
+    Date.now,
+    [hosts],
+  );
   const view = new AgentShellView(root, pager, directory, metadata, timeline, {
-    config: () => new ConfigDestinationBody(config),
+    config: () => new ConfigDestinationBody(config, () => view.render()),
     draft: () =>
       new DraftDestinationBody(
         draft,

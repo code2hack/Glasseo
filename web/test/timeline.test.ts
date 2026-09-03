@@ -647,6 +647,30 @@ test("binding cancels a failed cleanup when the identity reappears", async () =>
   hostDispose();
 });
 
+test("delayed host cleanup preserves a replacement Timeline", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const storage = new MemoryStorage();
+  storage.records.set(
+    timelineKey(key),
+    cache(key, page(key.agentId, "tail", 1, 1)),
+  );
+  const gate = deferred<void>();
+  storage.hostDeleteBarrier = gate.promise;
+  let absent = true;
+  const deleting = new TimelineCoordinator(storage).deleteHost(
+    key.serverId,
+    () => absent,
+  );
+  await settle();
+  absent = false;
+  const replacement = cache(key, page(key.agentId, "tail", 2, 1));
+  storage.records.set(timelineKey(key), replacement);
+  gate.resolve();
+
+  await assert.rejects(deleting, /stale/);
+  assert.equal(storage.records.get(timelineKey(key)), replacement);
+});
+
 test("cache validation and explicit row/byte bounds preserve only certified rows", () => {
   const key = { serverId: "alpha", agentId: "agent" };
   const source = cache(key, page("agent", "tail", 1, MAX_TIMELINE_ROWS + 5));
@@ -810,6 +834,7 @@ class MemoryStorage implements TimelineStorage {
   readonly records = new Map<string, CachedAgentTimeline>();
   failAgentDeletes = false;
   failHostDeletes = false;
+  hostDeleteBarrier: Promise<void> | null = null;
 
   async loadAgent(key: AgentKey): Promise<unknown | null> {
     return this.records.get(timelineKey(key)) ?? null;
@@ -824,8 +849,13 @@ class MemoryStorage implements TimelineStorage {
     if (this.failAgentDeletes) throw new Error("fixture delete failure");
     this.records.delete(timelineKey(key));
   }
-  async deleteHost(serverId: string): Promise<void> {
+  async deleteHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
     if (this.failHostDeletes) throw new Error("fixture delete failure");
+    await this.hostDeleteBarrier;
+    if (!stillRemoved()) throw new Error("Host cleanup is stale");
     for (const [key, record] of this.records)
       if (record.key.serverId === serverId) this.records.delete(key);
   }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PairingController, type PairingState } from "../src/hosts/pairing";
 import { HostRegistry } from "../src/hosts/registry";
-import type { HostStorage } from "../src/hosts/types";
+import type { HostRuntime, HostStorage } from "../src/hosts/types";
 import {
   decodeQrScannerMessage,
   type QrScannerMessage,
@@ -130,6 +130,47 @@ test("throwing pairing subscriber cannot starve completion or persistence", asyn
   assert.equal(registry.snapshot().hosts.length, 1);
 });
 
+test("cancel fences a late connection before it can pair a host", async () => {
+  let receive: (message: QrScannerMessage) => void = () => {};
+  const connected = deferred<Awaited<ReturnType<HostRuntime["connect"]>>>();
+  let closed = 0;
+  const registry = new HostRegistry(emptyStorage, () => ({
+    connect: () => connected.promise,
+    close: async () => {
+      closed++;
+    },
+    subscribeConnection: () => () => {},
+  }));
+  await registry.restore();
+  const pairing = new PairingController(registry, {
+    listen(listener) {
+      receive = listener;
+      return () => {};
+    },
+    start() {},
+    cancel() {},
+  });
+  let state: PairingState = { status: "idle" };
+  pairing.subscribe((next) => (state = next));
+
+  pairing.start();
+  receive({ type: "scanner-result", value: offer("late") });
+  await new Promise((resolve) => setImmediate(resolve));
+  pairing.cancel();
+  connected.resolve({
+    serverId: "late",
+    hostname: "Late",
+    version: "0.7.0",
+    capabilities: {},
+    features: {},
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(state, { status: "cancelled" });
+  assert.equal(registry.snapshot().hosts.length, 0);
+  assert.equal(closed, 1);
+});
+
 const emptyStorage: HostStorage = {
   loadProfiles: async () => [],
   putProfile: async () => {},
@@ -147,4 +188,10 @@ function offer(serverId: string): string {
       relay: { endpoint: "relay.paseo.sh:443" },
     }),
   ).toString("base64url")}`;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => (resolve = done));
+  return { promise, resolve };
 }

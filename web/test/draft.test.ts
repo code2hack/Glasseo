@@ -697,6 +697,28 @@ test("late host cleanup restores records when the host reappears", async () => {
   dispose();
 });
 
+test("delayed host cleanup preserves and restores only a replacement Draft", async () => {
+  const key = { serverId: "alpha", agentId: "agent" };
+  const storage = new MemoryDraftStorage();
+  storage.records.set(draftKey(key), draft({ key, text: "old" }));
+  const controller = new DraftController(storage);
+  const deletion = deferred<void>();
+  storage.hostDeletes.set(key.serverId, deletion.promise);
+  let absent = true;
+  const deleting = controller.deleteHost(key.serverId, () => absent);
+  await tick();
+  absent = false;
+  storage.records.set(
+    draftKey(key),
+    draft({ key, revision: 2, text: "replacement" }),
+  );
+  deletion.resolve();
+
+  await assert.rejects(deleting, /stale/);
+  await controller.activate(key, []);
+  assert.equal(controller.snapshot().session?.record.text, "replacement");
+});
+
 test("overlapping Agent and host cleanup cannot resurrect a removed Draft", async () => {
   const key = { serverId: "alpha", agentId: "agent" };
   const storage = new MemoryDraftStorage();
@@ -819,9 +841,13 @@ class MemoryDraftStorage implements DraftStorage {
     await this.deletes.get(draftKey(key));
     this.records.delete(draftKey(key));
   }
-  async deleteHost(serverId: string): Promise<void> {
+  async deleteHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
     if (this.failDeletes) throw new Error("delete failed");
     await this.hostDeletes.get(serverId);
+    if (!stillRemoved()) throw new Error("Host cleanup is stale");
     for (const [key, record] of this.records)
       if (record.key.serverId === serverId) this.records.delete(key);
   }

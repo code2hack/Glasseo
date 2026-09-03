@@ -314,14 +314,20 @@ export class TimelineCoordinator {
     this.publish();
   }
 
-  async deleteHost(serverId: string): Promise<void> {
+  async deleteHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
+    if (!stillRemoved()) throw new Error("Host cleanup is stale");
     if (this.current?.serverId === serverId) this.deactivate();
     for (const [key, state] of this.replicas) {
       if (state.snapshot.key.serverId !== serverId) continue;
       this.release(state);
       this.replicas.delete(key);
     }
-    await this.storage.deleteHost(serverId);
+    if (!stillRemoved()) throw new Error("Host cleanup is stale");
+    await this.storage.deleteHost(serverId, stillRemoved);
+    if (!stillRemoved()) throw new Error("Host cleanup is stale");
     this.publish();
   }
 

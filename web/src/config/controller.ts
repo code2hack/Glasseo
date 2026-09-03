@@ -13,6 +13,10 @@ import {
 import { validateStoredConfigUi } from "./storage";
 import {
   CONFIG_UI_VERSION,
+  type ConfigActionResult,
+  type ConfigRowAction,
+  type ConfigSectionProvider,
+  type ConfigSectionProjector,
   type ConfigState,
   type ConfigStorage,
 } from "./types";
@@ -27,12 +31,15 @@ export class ConfigController {
   private directoryValue: GlobalAgentDirectorySnapshot;
   private readonly listeners = new Set<(state: ConfigState) => void>();
   private readonly unsubscribeDirectory: () => void;
+  private readonly unsubscribeSections: readonly (() => void)[];
   private write: Promise<void> = Promise.resolve();
   private mutation = 0;
   private lastUpdatedAt = 0;
   private pendingRestore: ReturnType<typeof validateStoredConfigUi> | null =
     null;
   private activatedAgent: AgentKey | null = null;
+  private actionGeneration = 0;
+  private disposed = false;
 
   constructor(
     private readonly directory: ConfigDirectorySource,
@@ -42,9 +49,10 @@ export class ConfigController {
       agentId: string;
     }) => boolean,
     private readonly clock: () => number = Date.now,
+    private readonly sections: readonly ConfigSectionProvider[] = [],
   ) {
     this.directoryValue = directory.snapshot();
-    this.stateValue = initialConfigState(this.directoryValue);
+    this.stateValue = initialConfigState(this.directoryValue, this.sectionRows);
     this.unsubscribeDirectory = directory.subscribe((snapshot) => {
       this.directoryValue = snapshot;
       const revision = this.stateValue.revision;
@@ -57,9 +65,14 @@ export class ConfigController {
           stored.expandedRowIds,
           stored.focusedRowId,
           stored.revision,
+          this.sectionRows,
         );
       } else {
-        this.stateValue = reprojectConfigState(this.stateValue, snapshot);
+        this.stateValue = reprojectConfigState(
+          this.stateValue,
+          snapshot,
+          this.sectionRows,
+        );
       }
       if (this.stateValue.revision !== revision) {
         this.mutation++;
@@ -67,6 +80,9 @@ export class ConfigController {
       }
       this.publish();
     });
+    this.unsubscribeSections = sections.map((section) =>
+      section.subscribe(() => this.reproject()),
+    );
   }
 
   snapshot(): ConfigState {
@@ -75,6 +91,13 @@ export class ConfigController {
 
   lastActivatedAgent(): AgentKey | null {
     return this.activatedAgent ? { ...this.activatedAgent } : null;
+  }
+
+  sectionDiagnostics(): Readonly<Record<string, unknown>> {
+    return Object.assign(
+      {},
+      ...this.sections.map((section) => section.diagnostics?.() ?? {}),
+    );
   }
 
   subscribe(listener: (state: ConfigState) => void): () => void {
@@ -100,6 +123,7 @@ export class ConfigController {
         stored.expandedRowIds,
         stored.focusedRowId,
         stored.revision,
+        this.sectionRows,
       );
       this.publish();
     } catch {
@@ -112,6 +136,7 @@ export class ConfigController {
       this.stateValue,
       this.directoryValue,
       input,
+      this.sectionRows,
     );
     if (transition.state === this.stateValue) return false;
     const revision = this.stateValue.revision;
@@ -120,14 +145,75 @@ export class ConfigController {
     this.pendingRestore = null;
     if (transition.activate && this.activateAgent(transition.activate))
       this.activatedAgent = { ...transition.activate };
+    if (transition.action) this.activateSection(transition.action, input);
     if (this.stateValue.revision !== revision) this.persist();
     this.publish();
     return true;
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.actionGeneration++;
     this.unsubscribeDirectory();
+    this.unsubscribeSections.forEach((unsubscribe) => unsubscribe());
+    this.sections.forEach((section) => section.dispose?.());
     this.listeners.clear();
+  }
+
+  deactivate(): void {
+    this.actionGeneration++;
+    this.sections.forEach((section) => section.deactivate?.());
+  }
+
+  private readonly sectionRows: ConfigSectionProjector = (expanded) => {
+    return new Map(
+      this.sections.map((section) => [
+        section.sectionId,
+        section.rows(expanded),
+      ]),
+    );
+  };
+
+  private reproject(): void {
+    if (this.disposed) return;
+    const previous = this.stateValue;
+    this.stateValue = reprojectConfigState(
+      previous,
+      this.directoryValue,
+      this.sectionRows,
+    );
+    if (this.stateValue !== previous) this.publish();
+  }
+
+  private activateSection(action: ConfigRowAction, input: SemanticInput): void {
+    const section = this.sections.find(
+      (candidate) => candidate.sectionId === action.sectionId,
+    );
+    if (!section) return;
+    const generation = ++this.actionGeneration;
+    void Promise.resolve(section.activate(action, input.interactionId))
+      .then((result) => {
+        if (!result || this.disposed || generation !== this.actionGeneration)
+          return;
+        this.applyActionResult(result);
+      })
+      .catch(() => {});
+  }
+
+  private applyActionResult(result: Exclude<ConfigActionResult, void>): void {
+    const expanded = new Set(this.stateValue.expandedRowIds);
+    result.expandRowIds?.forEach((id) => expanded.add(id));
+    this.stateValue = restoreConfigState(
+      this.stateValue,
+      this.directoryValue,
+      [...expanded],
+      result.focusRowId ?? this.stateValue.focusedRowId,
+      this.stateValue.revision + 1,
+      this.sectionRows,
+    );
+    this.mutation++;
+    this.persist();
+    this.publish();
   }
 
   private persist(): void {

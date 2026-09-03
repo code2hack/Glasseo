@@ -20,8 +20,8 @@ export class IndexedDbHostStorage implements HostStorage {
     }
   }
 
-  putProfile(profile: StoredHostProfile): Promise<void> {
-    return this.write(PROFILES, (store) => store.put(profile));
+  putProfile(profile: StoredHostProfile, signal?: AbortSignal): Promise<void> {
+    return this.write(PROFILES, (store) => store.put(profile), signal);
   }
 
   deleteProfile(serverId: string): Promise<void> {
@@ -64,12 +64,30 @@ export class IndexedDbHostStorage implements HostStorage {
   private async write(
     storeName: string,
     operation: (store: IDBObjectStore) => IDBRequest,
+    signal?: AbortSignal,
   ): Promise<void> {
+    if (signal?.aborted)
+      throw new DOMException("Pairing cancelled", "AbortError");
     const db = await this.open();
     try {
+      if (signal?.aborted)
+        throw new DOMException("Pairing cancelled", "AbortError");
       const transaction = db.transaction(storeName, "readwrite");
-      operation(transaction.objectStore(storeName));
-      await completion(transaction);
+      const abort = () => {
+        try {
+          transaction.abort();
+        } catch {
+          // The transaction already committed.
+        }
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      try {
+        if (signal?.aborted) abort();
+        else operation(transaction.objectStore(storeName));
+        await completion(transaction);
+      } finally {
+        signal?.removeEventListener("abort", abort);
+      }
     } finally {
       db.close();
     }

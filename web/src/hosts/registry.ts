@@ -29,6 +29,7 @@ type Slot = HostRuntimeSnapshot & {
 export class HostRegistry {
   private readonly slots = new Map<string, Slot>();
   private readonly pending = new Map<string, PairingCandidate>();
+  private readonly cleanupTokens = new Map<string, number>();
   private readonly listeners = new Set<HostRegistryListener>();
   private readonly runtimeListeners = new Set<HostRuntimeLeaseListener>();
   private clientId: string | null = null;
@@ -127,22 +128,32 @@ export class HostRegistry {
     return this.addCandidate(parsePairingOffer(scannedValue));
   }
 
-  async addCandidate(candidate: PairingCandidate): Promise<StoredHostProfile> {
+  async addCandidate(
+    candidate: PairingCandidate,
+    signal?: AbortSignal,
+  ): Promise<StoredHostProfile> {
     await this.ensureLoaded();
+    throwIfAborted(signal);
     if (this.loadFailed)
       throw new HostError("storage_error", "Saved hosts could not be loaded");
+    if (this.cleanupTokens.has(candidate.serverId))
+      throw new HostError("duplicate_host", "Host removal cleanup is pending");
     this.rejectDuplicate(candidate);
     this.pending.set(candidate.serverId, candidate);
     let runtime: HostRuntime | null = null;
     try {
       runtime = this.createRuntime(candidate);
       const host = await runtime.connect();
+      throwIfAborted(signal);
       const profile = profileFromAcceptedHost(candidate, host, this.clock());
       try {
-        await this.storage.putProfile(profile);
-      } catch {
+        await this.storage.putProfile(profile, signal);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError")
+          throw error;
         throw new HostError("storage_error", "Could not save host profile");
       }
+      throwIfAborted(signal);
       this.install(profile, "online", runtime);
       this.publish();
       return profile;
@@ -154,7 +165,7 @@ export class HostRegistry {
     }
   }
 
-  async remove(serverId: string): Promise<void> {
+  async remove(serverId: string, cleanupToken?: number): Promise<void> {
     const slot = this.slots.get(serverId);
     if (!slot) return;
     slot.status = "removing";
@@ -170,9 +181,25 @@ export class HostRegistry {
     }
     slot.generation = ++this.generation;
     this.slots.delete(serverId);
+    if (cleanupToken !== undefined)
+      this.cleanupTokens.set(serverId, cleanupToken);
     slot.unsubscribe();
     await slot.runtime.close().catch(() => undefined);
     this.publish();
+  }
+
+  isCleanupCurrent(serverId: string, token: number): boolean {
+    return (
+      this.cleanupTokens.get(serverId) === token &&
+      !this.slots.has(serverId) &&
+      !this.pending.has(serverId)
+    );
+  }
+
+  completeCleanup(serverId: string, token: number): boolean {
+    if (!this.isCleanupCurrent(serverId, token)) return false;
+    this.cleanupTokens.delete(serverId);
+    return true;
   }
 
   private async ensureClientId(): Promise<string> {
@@ -228,7 +255,10 @@ export class HostRegistry {
     };
     slot.unsubscribe = runtime.subscribeConnection((state) => {
       if (this.slots.get(profile.serverId)?.generation !== generation) return;
-      const nextStatus = hostStatus(state);
+      const nextStatus =
+        state.status === "connecting" && state.attempt > 0
+          ? "reconnecting"
+          : hostStatus(state);
       if (nextStatus === "online" && slot.status !== "online")
         slot.connectionEpoch++;
       slot.status = nextStatus;
@@ -320,6 +350,7 @@ function candidateFromProfile(profile: StoredHostProfile): PairingCandidate {
 }
 
 function mapRuntimeError(error: unknown): HostError {
+  if (error instanceof DOMException && error.name === "AbortError") throw error;
   if (error instanceof HostError) return error;
   if (error instanceof PaseoRuntimeError) {
     if (error.code === "wrong_daemon")
@@ -331,4 +362,12 @@ function mapRuntimeError(error: unknown): HostError {
       return new HostError("unsupported_daemon", error.message);
   }
   return new HostError("connection_failure", "Could not connect to Paseo host");
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError();
+}
+
+function abortError(): DOMException {
+  return new DOMException("Pairing cancelled", "AbortError");
 }

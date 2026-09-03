@@ -76,5 +76,5 @@ export interface DraftStorage {
   loadHost(serverId: string): Promise<unknown[]>;
   putAgent(record: DraftRecord): Promise<boolean>;
   deleteAgent(key: AgentKey): Promise<void>;
-  deleteHost(serverId: string): Promise<void>;
+  deleteHost(serverId: string, stillRemoved?: () => boolean): Promise<void>;
 }

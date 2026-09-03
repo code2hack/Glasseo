@@ -25,6 +25,7 @@ export type HostConnectionStatus =
   | "restoring"
   | "connecting"
   | "online"
+  | "reconnecting"
   | "offline"
   | "error"
   | "removing";
@@ -63,7 +64,7 @@ export class HostError extends Error {
 
 export interface HostStorage {
   loadProfiles(): Promise<unknown[]>;
-  putProfile(profile: StoredHostProfile): Promise<void>;
+  putProfile(profile: StoredHostProfile, signal?: AbortSignal): Promise<void>;
   deleteProfile(serverId: string): Promise<void>;
   getClientId(): Promise<string | null>;
   putClientId(clientId: string): Promise<void>;

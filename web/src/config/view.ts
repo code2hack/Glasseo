@@ -10,7 +10,12 @@ import type { ConfigRow, ConfigState } from "./types";
 
 export type ConfigViewController = Pick<
   ConfigController,
-  "snapshot" | "subscribe" | "handle" | "lastActivatedAgent"
+  | "snapshot"
+  | "subscribe"
+  | "handle"
+  | "lastActivatedAgent"
+  | "deactivate"
+  | "sectionDiagnostics"
 >;
 export type ConfigDiagnostics = ReturnType<typeof configDiagnostics> &
   Readonly<{
@@ -25,9 +30,13 @@ export class ConfigDestinationBody implements DestinationBody {
   private readonly elements = new Map<string, HTMLElement>();
   private state: ConfigState;
   private unsubscribe: (() => void) | null = null;
+  private mounted = false;
   private renderRevision = 0;
 
-  constructor(private readonly controller: ConfigViewController) {
+  constructor(
+    private readonly controller: ConfigViewController,
+    private readonly invalidateShell: () => void = () => {},
+  ) {
     this.state = controller.snapshot();
     this.viewport.className = "config-viewport";
     this.viewport.setAttribute("aria-label", "Config");
@@ -41,7 +50,9 @@ export class ConfigDestinationBody implements DestinationBody {
     this.unsubscribe = this.controller.subscribe((state) => {
       this.state = state;
       this.render();
+      if (this.mounted) this.invalidateShell();
     });
+    this.mounted = true;
   }
 
   update(context: DestinationContext): void {
@@ -59,6 +70,7 @@ export class ConfigDestinationBody implements DestinationBody {
         this.controller.lastActivatedAgent(),
         this.renderRevision,
       ),
+      ...this.controller.sectionDiagnostics(),
       scrollTop: Math.round(this.viewport.scrollTop),
       scrollHeight: Math.round(this.viewport.scrollHeight),
       duplicateDomRows:
@@ -72,8 +84,10 @@ export class ConfigDestinationBody implements DestinationBody {
   }
 
   dispose(): void {
+    this.mounted = false;
     this.unsubscribe?.();
     this.unsubscribe = null;
+    this.controller.deactivate();
   }
 
   private render(): void {

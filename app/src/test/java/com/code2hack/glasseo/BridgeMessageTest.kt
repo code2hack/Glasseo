@@ -11,6 +11,10 @@ class BridgeMessageTest {
         assertEquals(BridgeMessage.Hello, BridgeMessage.parse("{\"type\":\"hello\"}"))
         assertEquals(BridgeMessage.ScannerStart, BridgeMessage.parse("{\"type\":\"scanner-start\"}"))
         assertEquals(BridgeMessage.ScannerCancel, BridgeMessage.parse("{\"type\":\"scanner-cancel\"}"))
+        assertEquals(
+            BridgeMessage.HostMediaCleanup(9, "host-a"),
+            BridgeMessage.parse("{\"type\":\"host-media-cleanup\",\"requestId\":9,\"serverId\":\"host-a\"}"),
+        )
         assertTrue((BridgeMessage.parse(passingProbe()) as BridgeMessage.ProbeResult).isPassing())
         assertEquals(
             BridgeMessage.SemanticReceived(SemanticControl.PRIMARY, SemanticAction.SHORT, 7),
@@ -48,6 +52,7 @@ class BridgeMessageTest {
             "{\"type\":\"other\"}",
             "{\"type\":\"hello\",\"extra\":true}",
             "{\"type\":\"scanner-start\",\"extra\":true}",
+            "{\"type\":\"host-media-cleanup\",\"requestId\":0,\"serverId\":\"host-a\"}",
             "{\"type\":\"semantic-received\",\"control\":\"OTHER\",\"action\":\"SHORT\",\"interactionId\":7}",
             "{\"type\":\"semantic-received\",\"control\":\"PRIMARY\",\"action\":\"SHORT\",\"interactionId\":0}",
             "{\"type\":\"qualification-start\",\"mode\":\"OTHER\"}",

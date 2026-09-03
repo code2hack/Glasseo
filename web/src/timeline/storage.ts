@@ -67,16 +67,26 @@ export class IndexedDbTimelineStorage implements TimelineStorage {
     );
   }
 
-  deleteHost(serverId: string): Promise<void> {
-    return this.enqueue(() => this.writeHostDeletion(serverId));
+  deleteHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
+    return this.enqueue(() => this.writeHostDeletion(serverId, stillRemoved));
   }
 
-  private async writeHostDeletion(serverId: string): Promise<void> {
+  private async writeHostDeletion(
+    serverId: string,
+    stillRemoved: () => boolean,
+  ): Promise<void> {
     const db = await this.open();
     try {
       const transaction = db.transaction(TIMELINES, "readwrite");
       const store = transaction.objectStore(TIMELINES);
       const records = await request<StoredRecord[]>(store.getAll());
+      if (!stillRemoved()) {
+        transaction.abort();
+        throw new Error("Host cleanup is stale");
+      }
       records
         .filter((record) => record.serverId === serverId)
         .forEach(({ id }) => store.delete(id));
