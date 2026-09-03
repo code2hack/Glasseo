@@ -113,7 +113,7 @@ export interface DirectoryStorage {
   loadHost(serverId: string): Promise<unknown | null>;
   listHostIds(): Promise<string[]>;
   putHost(directory: CachedHostDirectory): Promise<void>;
-  deleteHost(serverId: string): Promise<void>;
+  deleteHost(serverId: string, stillRemoved?: () => boolean): Promise<void>;
   getLastViewedAgent(): Promise<unknown | null>;
   putLastViewedAgent(key: AgentKey | null): Promise<void>;
 }

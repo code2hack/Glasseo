@@ -132,11 +132,18 @@ export class DirectoryCoordinator {
     return true;
   }
 
-  async cleanupHost(serverId: string): Promise<void> {
-    if (this.leases.has(serverId))
+  async cleanupHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
+    if (this.leases.has(serverId) || !stillRemoved())
       throw new Error("Cannot clean an active host");
-    await this.queueWrite(serverId, () => this.storage.deleteHost(serverId));
-    if (this.snapshot().hosts.has(serverId))
+    await this.queueWrite(serverId, async () => {
+      if (!stillRemoved()) throw new Error("Host cleanup is stale");
+      await this.storage.deleteHost(serverId, stillRemoved);
+      if (!stillRemoved()) throw new Error("Host cleanup is stale");
+    });
+    if (this.snapshot().hosts.has(serverId) || !stillRemoved())
       throw new Error("Host directory is still reachable");
   }
 

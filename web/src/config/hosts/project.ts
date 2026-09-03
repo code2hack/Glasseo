@@ -133,10 +133,10 @@ export function projectHosts(
       "action",
       1,
       "+ Add new host",
-      null,
+      state.removingServerId ? "Unavailable during host cleanup" : null,
       false,
       expanded,
-      "add",
+      state.removingServerId ? null : "add",
       null,
     ),
   );

@@ -66,14 +66,36 @@ export async function bootstrap(): Promise<void> {
     new HostCleanupCoordinator([
       {
         name: "directory",
-        cleanup: (serverId) => directory.cleanupHost(serverId),
+        cleanup: (operation) =>
+          directory.cleanupHost(operation.serverId, () => {
+            operation.assertActive();
+            return true;
+          }),
       },
       {
         name: "timeline",
-        cleanup: (serverId) => timeline.deleteHost(serverId),
+        cleanup: (operation) =>
+          timeline.deleteHost(operation.serverId, () => {
+            operation.assertActive();
+            return true;
+          }),
       },
-      { name: "drafts", cleanup: (serverId) => draft.deleteHost(serverId) },
-      { name: "native-media", cleanup: cleanupHostMedia },
+      {
+        name: "drafts",
+        cleanup: (operation) =>
+          draft.deleteHost(operation.serverId, () => {
+            operation.assertActive();
+            return true;
+          }),
+      },
+      {
+        name: "native-media",
+        cleanup: async (operation) => {
+          operation.assertActive();
+          await cleanupHostMedia(operation.serverId);
+          operation.assertActive();
+        },
+      },
       emptyHostCleanupParticipant("request-answers"),
     ]),
   );

@@ -19,7 +19,10 @@ import {
 } from "./project";
 import type { HostsConfigState } from "./types";
 
-type RegistryPort = Pick<HostRegistry, "snapshot" | "subscribe" | "remove">;
+type RegistryPort = Pick<
+  HostRegistry,
+  "snapshot" | "subscribe" | "remove" | "isCleanupCurrent" | "completeCleanup"
+>;
 type PairingPort = Pick<
   PairingController,
   "snapshot" | "subscribe" | "start" | "cancel"
@@ -170,7 +173,8 @@ export class HostsConfigController implements ConfigSectionProvider {
   }
 
   private add(): Promise<ConfigActionResult> {
-    if (this.pendingPairing) return Promise.resolve();
+    if (this.pendingPairing || this.state.removingServerId)
+      return Promise.resolve();
     this.state = { ...this.state, notice: null };
     this.publish();
     const result = new Promise<ConfigActionResult>(
@@ -224,7 +228,7 @@ export class HostsConfigController implements ConfigSectionProvider {
     };
     this.publish();
     try {
-      await this.registry.remove(serverId);
+      await this.registry.remove(serverId, revision);
     } catch {
       this.state = { ...this.state, removingServerId: null };
       this.notice("Removal failed", "storage_error");
@@ -239,8 +243,14 @@ export class HostsConfigController implements ConfigSectionProvider {
   }
 
   private retryCleanup(serverId: string | null): Promise<ConfigActionResult> {
-    if (!serverId) return Promise.resolve();
-    const revision = this.state.operationRevision + 1;
+    if (
+      !serverId ||
+      this.state.removingServerId !== serverId ||
+      this.state.notice?.retryServerId !== serverId ||
+      hasHost(this.registryValue, serverId)
+    )
+      return Promise.resolve();
+    const revision = this.state.operationRevision;
     this.state = {
       ...this.state,
       removingServerId: serverId,
@@ -256,14 +266,29 @@ export class HostsConfigController implements ConfigSectionProvider {
     revision: number,
   ): Promise<ConfigActionResult> {
     try {
-      const result = await this.cleanup.cleanup(serverId);
+      const operation = {
+        serverId,
+        token: revision,
+        assertActive: () => {
+          if (
+            this.state.operationRevision !== revision ||
+            this.state.removingServerId !== serverId ||
+            !this.registry.isCleanupCurrent(serverId, revision)
+          )
+            throw new Error("Host cleanup operation is stale");
+        },
+      };
+      const result = await this.cleanup.cleanup(operation);
       if (this.state.operationRevision !== revision) return;
+      operation.assertActive();
+      if (!this.registry.completeCleanup(serverId, revision))
+        throw new Error("Host cleanup operation is stale");
       this.state = { ...this.state, removingServerId: null, cleanup: result };
       this.notice("Host removed");
     } catch (error) {
       if (this.state.operationRevision !== revision) return;
       const result = error instanceof HostCleanupError ? error.result : null;
-      this.state = { ...this.state, removingServerId: null, cleanup: result };
+      this.state = { ...this.state, cleanup: result };
       this.notice(
         "Cleanup failed — retry",
         result?.failed.join(", ") ?? "unknown",

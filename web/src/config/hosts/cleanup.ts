@@ -1,6 +1,12 @@
 export type HostCleanupParticipant = Readonly<{
   name: string;
-  cleanup(serverId: string): Promise<void>;
+  cleanup(operation: HostCleanupOperation): Promise<void>;
+}>;
+
+export type HostCleanupOperation = Readonly<{
+  serverId: string;
+  token: number;
+  assertActive(): void;
 }>;
 
 export type HostCleanupResult = Readonly<{
@@ -21,12 +27,16 @@ export class HostCleanupCoordinator {
     private readonly participants: readonly HostCleanupParticipant[],
   ) {}
 
-  async cleanup(serverId: string): Promise<HostCleanupResult> {
+  async cleanup(operation: HostCleanupOperation): Promise<HostCleanupResult> {
     const settled = await Promise.allSettled(
-      this.participants.map((participant) => participant.cleanup(serverId)),
+      this.participants.map(async (participant) => {
+        operation.assertActive();
+        await participant.cleanup(operation);
+        operation.assertActive();
+      }),
     );
     const result: HostCleanupResult = {
-      serverId,
+      serverId: operation.serverId,
       completed: this.participants
         .filter((_, index) => settled[index]?.status === "fulfilled")
         .map(({ name }) => name),

@@ -242,7 +242,7 @@ export class DraftController {
     return this.clean(async () => {
       const backups = await this.backupHost(serverId);
       if (!stillRemoved()) return;
-      await this.storage.deleteHost(serverId);
+      await this.storage.deleteHost(serverId, stillRemoved);
       if (!stillRemoved()) {
         for (const record of this.currentHostRecords(serverId, backups))
           await this.storage.putAgent(record);

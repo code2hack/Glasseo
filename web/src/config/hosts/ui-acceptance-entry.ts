@@ -35,7 +35,7 @@ window.__glasseoConfigHostsAcceptance = {
       new HostCleanupCoordinator([
         {
           name: "acceptance",
-          cleanup: async (serverId) => void cleaned.push(serverId),
+          cleanup: async (operation) => void cleaned.push(operation.serverId),
         },
       ]),
     );
@@ -135,6 +135,7 @@ class AcceptanceDirectory {
 
 class AcceptanceRegistry {
   private value: HostRegistrySnapshot;
+  private cleanupToken: number | null = null;
   private readonly listeners = new Set<(value: HostRegistrySnapshot) => void>();
   constructor(hosts: HostRuntimeSnapshot[]) {
     this.value = { hosts, storageErrors: 0 };
@@ -147,14 +148,26 @@ class AcceptanceRegistry {
     listener(this.value);
     return () => this.listeners.delete(listener);
   }
-  async remove(serverId: string) {
+  async remove(serverId: string, cleanupToken?: number) {
     this.value = {
       ...this.value,
       hosts: this.value.hosts.filter(
         (host) => host.profile.serverId !== serverId,
       ),
     };
+    this.cleanupToken = cleanupToken ?? null;
     for (const listener of this.listeners) listener(this.value);
+  }
+  isCleanupCurrent(serverId: string, token: number) {
+    return (
+      this.cleanupToken === token &&
+      !this.value.hosts.some((host) => host.profile.serverId === serverId)
+    );
+  }
+  completeCleanup(serverId: string, token: number) {
+    if (!this.isCleanupCurrent(serverId, token)) return false;
+    this.cleanupToken = null;
+    return true;
   }
 }
 

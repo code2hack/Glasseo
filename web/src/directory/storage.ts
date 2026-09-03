@@ -38,8 +38,11 @@ export class IndexedDbDirectoryStorage implements DirectoryStorage {
     return this.write(HOSTS, (store) => store.put(directory));
   }
 
-  deleteHost(serverId: string): Promise<void> {
-    return this.write(HOSTS, (store) => store.delete(serverId));
+  deleteHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
+    return this.write(HOSTS, (store) => store.delete(serverId), stillRemoved);
   }
 
   async getLastViewedAgent(): Promise<unknown | null> {
@@ -79,12 +82,15 @@ export class IndexedDbDirectoryStorage implements DirectoryStorage {
   private async write(
     storeName: string,
     operation: (store: IDBObjectStore) => IDBRequest,
+    stillCurrent: () => boolean = () => true,
   ): Promise<void> {
     const db = await this.open();
     try {
+      if (!stillCurrent()) throw new Error("Host cleanup is stale");
       const transaction = db.transaction(storeName, "readwrite");
       operation(transaction.objectStore(storeName));
       await completion(transaction);
+      if (!stillCurrent()) throw new Error("Host cleanup is stale");
     } finally {
       db.close();
     }

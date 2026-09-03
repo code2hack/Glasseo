@@ -85,7 +85,7 @@ export interface TimelineStorage {
   loadAgent(key: AgentKey): Promise<unknown | null>;
   putAgent(record: CachedAgentTimeline): Promise<void>;
   deleteAgent(key: AgentKey): Promise<void>;
-  deleteHost(serverId: string): Promise<void>;
+  deleteHost(serverId: string, stillRemoved?: () => boolean): Promise<void>;
 }
 
 export type OlderAnchor = Readonly<{

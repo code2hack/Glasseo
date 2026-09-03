@@ -9,6 +9,7 @@ import {
 } from "../src/paseo/adapter";
 import { parsePairingOffer } from "../src/hosts/offer";
 import { HostRegistry } from "../src/hosts/registry";
+import { IndexedDbHostStorage } from "../src/hosts/storage";
 import {
   HostError,
   validateStoredHostProfile,
@@ -282,6 +283,52 @@ test("cancellation aborts profile persistence before a host can become durable",
   assert.equal(registry.snapshot().hosts.length, 0);
 });
 
+test("IndexedDB cancellation during open never writes or restores the candidate", async () => {
+  const indexedDb = new HostIndexedDbFactory();
+  const storage = new IndexedDbHostStorage(indexedDb.value);
+  const registry = new HostRegistry(storage, new FakeFactory().create);
+  await registry.restore();
+  indexedDb.delayNextOpen();
+  const abort = new AbortController();
+  const adding = registry.addCandidate(
+    parsePairingOffer(offer("cancelled-open", "relay.paseo.sh:443")),
+    abort.signal,
+  );
+  await indexedDb.openStarted();
+  abort.abort();
+  indexedDb.releaseOpen();
+
+  await assert.rejects(adding, isAbort);
+  assert.equal(indexedDb.puts, 0);
+  assert.equal(registry.snapshot().hosts.length, 0);
+  const restarted = new HostRegistry(storage, new FakeFactory().create);
+  await restarted.restore();
+  assert.equal(restarted.snapshot().hosts.length, 0);
+});
+
+test("IndexedDB cancellation after transaction creation aborts before commit", async () => {
+  const indexedDb = new HostIndexedDbFactory();
+  const storage = new IndexedDbHostStorage(indexedDb.value);
+  const registry = new HostRegistry(storage, new FakeFactory().create);
+  await registry.restore();
+  indexedDb.delayNextCommit();
+  const abort = new AbortController();
+  const adding = registry.addCandidate(
+    parsePairingOffer(offer("cancelled-transaction", "relay.paseo.sh:443")),
+    abort.signal,
+  );
+  await indexedDb.transactionStarted();
+  abort.abort();
+  indexedDb.releaseCommit();
+
+  await assert.rejects(adding, isAbort);
+  assert.equal(indexedDb.puts, 1);
+  assert.equal(registry.snapshot().hosts.length, 0);
+  const restarted = new HostRegistry(storage, new FakeFactory().create);
+  await restarted.restore();
+  assert.equal(restarted.snapshot().hosts.length, 0);
+});
+
 test("hosts restore concurrently and expose independent connection states", async () => {
   const storage = new MemoryStorage([profile("alpha"), profile("beta")]);
   const factory = new FakeFactory();
@@ -347,6 +394,25 @@ test("removal deletes and closes one host while fencing late callbacks", async (
     restarted.options.map((options) => options.expectedServerId),
     ["beta"],
   );
+});
+
+test("cleanup tombstone rejects same-ID pairing until its exact token completes", async () => {
+  const storage = new MemoryStorage([profile("alpha")]);
+  const registry = new HostRegistry(storage, new FakeFactory().create);
+  await registry.restore();
+  await registry.remove("alpha", 7);
+
+  assert.equal(registry.isCleanupCurrent("alpha", 7), true);
+  assert.equal(registry.completeCleanup("alpha", 8), false);
+  await assert.rejects(
+    registry.add(offer("alpha", "relay.paseo.sh:443")),
+    hasCode("duplicate_host"),
+  );
+  assert.equal(storage.profiles.has("alpha"), false);
+
+  assert.equal(registry.completeCleanup("alpha", 7), true);
+  await registry.add(offer("alpha", "relay.paseo.sh:443"));
+  assert.equal(storage.profiles.has("alpha"), true);
 });
 
 test("failed removal keeps live callbacks and retry fences only after success", async () => {
@@ -630,6 +696,134 @@ class FakeFactory {
   };
 }
 
+class HostIndexedDbFactory {
+  private readonly profiles = new Map<IDBValidKey, unknown>();
+  private readonly meta = new Map<IDBValidKey, unknown>([
+    ["clientId", "0123456789abcdef0123456789abcdef"],
+  ]);
+  private openGate: ReturnType<typeof deferred<void>> | null = null;
+  private openStart: ReturnType<typeof deferred<void>> | null = null;
+  private commitGate: ReturnType<typeof deferred<void>> | null = null;
+  private transactionStart: ReturnType<typeof deferred<void>> | null = null;
+  puts = 0;
+
+  readonly value = {
+    open: () => {
+      const open = {} as IDBOpenDBRequest;
+      Object.defineProperty(open, "result", { value: this.database() });
+      const gate = this.openGate;
+      const started = this.openStart;
+      started?.resolve();
+      void (gate?.promise ?? Promise.resolve()).then(() =>
+        open.onsuccess?.(new Event("success")),
+      );
+      return open;
+    },
+  } as unknown as IDBFactory;
+
+  delayNextOpen(): void {
+    this.openGate = deferred<void>();
+    this.openStart = deferred<void>();
+  }
+
+  openStarted(): Promise<void> {
+    return this.openStart?.promise ?? Promise.resolve();
+  }
+
+  releaseOpen(): void {
+    this.openGate?.resolve();
+  }
+
+  delayNextCommit(): void {
+    this.commitGate = deferred<void>();
+    this.transactionStart = deferred<void>();
+  }
+
+  transactionStarted(): Promise<void> {
+    return this.transactionStart?.promise ?? Promise.resolve();
+  }
+
+  releaseCommit(): void {
+    this.commitGate?.resolve();
+  }
+
+  private database(): IDBDatabase {
+    return {
+      objectStoreNames: { contains: () => true },
+      transaction: (name: string, mode?: IDBTransactionMode) => {
+        const rows = name === "profiles" ? this.profiles : this.meta;
+        const gate = mode === "readwrite" ? this.commitGate : null;
+        if (mode === "readwrite") {
+          this.transactionStart?.resolve();
+        }
+        return new HostIndexedDbTransaction(
+          rows,
+          gate?.promise ?? Promise.resolve(),
+          () => this.puts++,
+        ).value;
+      },
+      close: () => {},
+    } as unknown as IDBDatabase;
+  }
+}
+
+class HostIndexedDbTransaction {
+  private aborted = false;
+  private staged: (() => void) | null = null;
+  readonly value: IDBTransaction;
+
+  constructor(
+    private readonly rows: Map<IDBValidKey, unknown>,
+    commitGate: Promise<void>,
+    private readonly recordPut: () => void,
+  ) {
+    this.value = {
+      objectStore: () => this.store(),
+      abort: () => {
+        if (this.aborted) return;
+        this.aborted = true;
+        Object.defineProperty(this.value, "error", {
+          configurable: true,
+          value: new DOMException("Pairing cancelled", "AbortError"),
+        });
+        queueMicrotask(() => this.value.onabort?.(new Event("abort")));
+      },
+      error: null,
+      oncomplete: null,
+      onabort: null,
+      onerror: null,
+    } as unknown as IDBTransaction;
+    void commitGate.then(() => {
+      if (this.aborted || !this.staged) return;
+      this.staged();
+      queueMicrotask(() => this.value.oncomplete?.(new Event("complete")));
+    });
+  }
+
+  private store(): IDBObjectStore {
+    return {
+      getAll: () => requestResult([...this.rows.values()]),
+      get: (key: IDBValidKey) => requestResult(this.rows.get(key)),
+      put: (value: StoredHostProfile) => {
+        this.recordPut();
+        this.staged = () =>
+          this.rows.set(value.serverId, structuredClone(value));
+        return requestResult(value.serverId);
+      },
+      delete: (key: IDBValidKey) => {
+        this.staged = () => void this.rows.delete(key);
+        return requestResult(undefined);
+      },
+    } as unknown as IDBObjectStore;
+  }
+}
+
+function requestResult<T>(result: T): IDBRequest<T> {
+  const request = { result } as IDBRequest<T>;
+  queueMicrotask(() => request.onsuccess?.(new Event("success")));
+  return request;
+}
+
 function profile(serverId: string): StoredHostProfile {
   return {
     schemaVersion: 1,
@@ -668,6 +862,10 @@ function hostInfo(serverId: string): PaseoHostInfo {
 
 function hasCode(code: string) {
   return (error: unknown) => error instanceof HostError && error.code === code;
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function tick(): Promise<void> {

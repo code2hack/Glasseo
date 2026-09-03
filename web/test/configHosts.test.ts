@@ -72,8 +72,8 @@ test("removal defaults to Cancel, requires a distinct action, and cleans only it
   const cleanup = new HostCleanupCoordinator(
     Object.entries(stores).map(([name, values]) => ({
       name,
-      cleanup: async (serverId: string) => {
-        values.delete(serverId);
+      cleanup: async (operation) => {
+        values.delete(operation.serverId);
       },
     })),
   );
@@ -162,6 +162,118 @@ test("a pending removal cannot be confirmed a second time", async () => {
   controller.dispose();
 });
 
+test("Add stays fenced until delayed cleanup completes", async () => {
+  const registry = new FakeRegistry([host("alpha", "Alpha")]);
+  const pairing = new FakePairing();
+  const gate = deferred<void>();
+  const controller = new HostsConfigController(
+    registry,
+    pairing,
+    new HostCleanupCoordinator([
+      {
+        name: "delayed",
+        cleanup: async (operation) => {
+          await gate.promise;
+          operation.assertActive();
+        },
+      },
+    ]),
+  );
+  controller.activate(action("remove", "alpha"), 1);
+  const removing = controller.activate(action("confirm-removal", "alpha"), 2);
+  await tick();
+
+  await controller.activate(action("add", null), 3);
+  assert.equal(pairing.starts, 0);
+  assert.equal(
+    controller.rows(new Set([HOSTS_SECTION_ID])).at(-1)?.action,
+    null,
+  );
+
+  gate.resolve();
+  await removing;
+  controller.activate(action("add", null), 4);
+  assert.equal(pairing.starts, 1);
+  controller.dispose();
+});
+
+test("failed cleanup keeps the tombstone and only retry can finish it", async () => {
+  const registry = new FakeRegistry([host("alpha", "Alpha")]);
+  const pairing = new FakePairing();
+  let fail = true;
+  const controller = new HostsConfigController(
+    registry,
+    pairing,
+    new HostCleanupCoordinator([
+      {
+        name: "cache",
+        cleanup: async (operation) => {
+          operation.assertActive();
+          if (fail) throw new Error("fixture");
+        },
+      },
+    ]),
+  );
+  controller.activate(action("remove", "alpha"), 1);
+  await controller.activate(action("confirm-removal", "alpha"), 2);
+
+  await controller.activate(action("add", null), 3);
+  assert.equal(pairing.starts, 0);
+  registry.add(host("alpha", "Replacement"));
+  await controller.activate(action("retry-cleanup", "alpha"), 4);
+  assert.equal(registry.snapshot().hosts[0]?.profile.hostname, "Replacement");
+
+  registry.drop("alpha");
+  fail = false;
+  await controller.activate(action("retry-cleanup", "alpha"), 5);
+  controller.activate(action("add", null), 6);
+  assert.equal(pairing.starts, 1);
+  controller.dispose();
+});
+
+test("injected same-ID reappearance cancels delayed destructive cleanup", async () => {
+  const registry = new FakeRegistry([host("alpha", "Old")]);
+  const gate = deferred<void>();
+  const replacementState = {
+    directory: new Map([["alpha", "replacement-directory"]]),
+    timeline: new Map([["alpha", "replacement-timeline"]]),
+    drafts: new Map([["alpha", "replacement-draft"]]),
+  };
+  const controller = new HostsConfigController(
+    registry,
+    new FakePairing(),
+    new HostCleanupCoordinator(
+      Object.entries(replacementState).map(([name, records]) => ({
+        name,
+        cleanup: async (operation) => {
+          await gate.promise;
+          operation.assertActive();
+          records.delete(operation.serverId);
+        },
+      })),
+    ),
+  );
+  controller.activate(action("remove", "alpha"), 1);
+  const removing = controller.activate(action("confirm-removal", "alpha"), 2);
+  await tick();
+  registry.add(host("alpha", "Replacement"));
+  gate.resolve();
+  await removing;
+
+  assert.deepEqual(
+    Object.values(replacementState).map((records) => records.get("alpha")),
+    ["replacement-directory", "replacement-timeline", "replacement-draft"],
+  );
+  assert.equal(registry.snapshot().hosts[0]?.profile.hostname, "Replacement");
+  assert.equal(
+    controller
+      .rows(new Set([HOSTS_SECTION_ID]))
+      .some((row) => row.label === "Cleanup failed — retry"),
+    true,
+  );
+  controller.dispose();
+});
+
 test("pairing success focuses the new stable host row and cancellation disposes scanning", async () => {
   const registry = new FakeRegistry([]);
   const pairing = new FakePairing();
@@ -187,15 +299,25 @@ test("pairing success focuses the new stable host row and cancellation disposes 
 test("cleanup reports isolated participant failures for retry", async () => {
   const beta = new Set(["alpha", "beta"]);
   const coordinator = new HostCleanupCoordinator([
-    { name: "ok", cleanup: async (id) => void beta.delete(id) },
+    {
+      name: "ok",
+      cleanup: async (operation) => void beta.delete(operation.serverId),
+    },
     { name: "failed", cleanup: async () => Promise.reject(new Error("disk")) },
   ]);
-  await assert.rejects(coordinator.cleanup("alpha"), (error) => {
-    assert.ok(error instanceof HostCleanupError);
-    assert.deepEqual(error.result.completed, ["ok"]);
-    assert.deepEqual(error.result.failed, ["failed"]);
-    return true;
-  });
+  await assert.rejects(
+    coordinator.cleanup({
+      serverId: "alpha",
+      token: 1,
+      assertActive: () => {},
+    }),
+    (error) => {
+      assert.ok(error instanceof HostCleanupError);
+      assert.deepEqual(error.result.completed, ["ok"]);
+      assert.deepEqual(error.result.failed, ["failed"]);
+      return true;
+    },
+  );
   assert.deepEqual([...beta], ["beta"]);
 });
 
@@ -241,6 +363,7 @@ class FakeRegistry {
   removals: string[] = [];
   failRemove = false;
   removeBarrier: Promise<void> | null = null;
+  cleanupTokens = new Map<string, number>();
   constructor(hosts: HostRuntimeSnapshot[]) {
     this.value = { hosts, storageErrors: 0 };
   }
@@ -252,7 +375,7 @@ class FakeRegistry {
     listener(this.value);
     return () => this.listeners.delete(listener);
   }
-  async remove(serverId: string) {
+  async remove(serverId: string, cleanupToken?: number) {
     this.removals.push(serverId);
     await this.removeBarrier;
     if (this.failRemove) throw new Error("storage");
@@ -262,10 +385,32 @@ class FakeRegistry {
         (host) => host.profile.serverId !== serverId,
       ),
     };
+    if (cleanupToken !== undefined)
+      this.cleanupTokens.set(serverId, cleanupToken);
     this.publish();
+  }
+  isCleanupCurrent(serverId: string, token: number) {
+    return (
+      this.cleanupTokens.get(serverId) === token &&
+      !this.value.hosts.some((host) => host.profile.serverId === serverId)
+    );
+  }
+  completeCleanup(serverId: string, token: number) {
+    if (!this.isCleanupCurrent(serverId, token)) return false;
+    this.cleanupTokens.delete(serverId);
+    return true;
   }
   add(value: HostRuntimeSnapshot) {
     this.value = { ...this.value, hosts: [...this.value.hosts, value] };
+    this.publish();
+  }
+  drop(serverId: string) {
+    this.value = {
+      ...this.value,
+      hosts: this.value.hosts.filter(
+        (host) => host.profile.serverId !== serverId,
+      ),
+    };
     this.publish();
   }
   private publish() {
@@ -277,6 +422,10 @@ function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((done) => (resolve = done));
   return { promise, resolve };
+}
+
+function tick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 class FakePairing {

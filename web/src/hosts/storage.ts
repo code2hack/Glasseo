@@ -70,6 +70,8 @@ export class IndexedDbHostStorage implements HostStorage {
       throw new DOMException("Pairing cancelled", "AbortError");
     const db = await this.open();
     try {
+      if (signal?.aborted)
+        throw new DOMException("Pairing cancelled", "AbortError");
       const transaction = db.transaction(storeName, "readwrite");
       const abort = () => {
         try {
@@ -79,8 +81,9 @@ export class IndexedDbHostStorage implements HostStorage {
         }
       };
       signal?.addEventListener("abort", abort, { once: true });
-      operation(transaction.objectStore(storeName));
       try {
+        if (signal?.aborted) abort();
+        else operation(transaction.objectStore(storeName));
         await completion(transaction);
       } finally {
         signal?.removeEventListener("abort", abort);

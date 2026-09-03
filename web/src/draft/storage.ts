@@ -87,13 +87,20 @@ export class IndexedDbDraftStorage implements DraftStorage {
     );
   }
 
-  deleteHost(serverId: string): Promise<void> {
+  deleteHost(
+    serverId: string,
+    stillRemoved: () => boolean = () => true,
+  ): Promise<void> {
     return this.enqueue(async () => {
       const db = await this.open();
       try {
         const transaction = db.transaction(DRAFTS, "readwrite");
         const store = transaction.objectStore(DRAFTS);
         const values = await request<StoredDraft[]>(store.getAll());
+        if (!stillRemoved()) {
+          transaction.abort();
+          throw new Error("Host cleanup is stale");
+        }
         values
           .filter((value) => value.serverId === serverId)
           .forEach(({ id }) => store.delete(id));

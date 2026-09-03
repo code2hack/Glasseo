@@ -29,6 +29,7 @@ type Slot = HostRuntimeSnapshot & {
 export class HostRegistry {
   private readonly slots = new Map<string, Slot>();
   private readonly pending = new Map<string, PairingCandidate>();
+  private readonly cleanupTokens = new Map<string, number>();
   private readonly listeners = new Set<HostRegistryListener>();
   private readonly runtimeListeners = new Set<HostRuntimeLeaseListener>();
   private clientId: string | null = null;
@@ -135,6 +136,8 @@ export class HostRegistry {
     throwIfAborted(signal);
     if (this.loadFailed)
       throw new HostError("storage_error", "Saved hosts could not be loaded");
+    if (this.cleanupTokens.has(candidate.serverId))
+      throw new HostError("duplicate_host", "Host removal cleanup is pending");
     this.rejectDuplicate(candidate);
     this.pending.set(candidate.serverId, candidate);
     let runtime: HostRuntime | null = null;
@@ -162,7 +165,7 @@ export class HostRegistry {
     }
   }
 
-  async remove(serverId: string): Promise<void> {
+  async remove(serverId: string, cleanupToken?: number): Promise<void> {
     const slot = this.slots.get(serverId);
     if (!slot) return;
     slot.status = "removing";
@@ -178,9 +181,25 @@ export class HostRegistry {
     }
     slot.generation = ++this.generation;
     this.slots.delete(serverId);
+    if (cleanupToken !== undefined)
+      this.cleanupTokens.set(serverId, cleanupToken);
     slot.unsubscribe();
     await slot.runtime.close().catch(() => undefined);
     this.publish();
+  }
+
+  isCleanupCurrent(serverId: string, token: number): boolean {
+    return (
+      this.cleanupTokens.get(serverId) === token &&
+      !this.slots.has(serverId) &&
+      !this.pending.has(serverId)
+    );
+  }
+
+  completeCleanup(serverId: string, token: number): boolean {
+    if (!this.isCleanupCurrent(serverId, token)) return false;
+    this.cleanupTokens.delete(serverId);
+    return true;
   }
 
   private async ensureClientId(): Promise<string> {
