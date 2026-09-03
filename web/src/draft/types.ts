@@ -1,5 +1,6 @@
 import type { AgentKey } from "../directory/types";
 import type { SemanticInput } from "../native/semanticInput";
+import type { TextSelection } from "./text/types";
 
 export const DRAFT_SCHEMA_VERSION = 1 as const;
 
@@ -32,7 +33,8 @@ export type DraftRecord = Readonly<{
 
 export type DraftTransientState = Readonly<{
   mode: "edit";
-  textSelection: null;
+  textSelection: TextSelection | null;
+  textCopyBuffer: string;
   selectedImageIds: readonly string[];
   provisionalText: null;
   wheelOpen: false;
@@ -53,6 +55,13 @@ export type DraftAction =
   | Readonly<{ type: "append-images"; images: readonly DraftImageRef[] }>
   | Readonly<{ type: "remove-images"; imageIds: readonly string[] }>
   | Readonly<{ type: "replace-text"; text: string }>
+  | Readonly<{
+      type: "replace-text-range";
+      start: number;
+      end: number;
+      text: string;
+    }>
+  | Readonly<{ type: "insert-committed-text"; text: string }>
   | Readonly<{ type: "set-text-cursor"; textOffset: number }>
   | Readonly<{ type: "cycle-area"; direction: "left" | "right" }>
   | Readonly<{ type: "move-within-area"; direction: "up" | "down" }>;

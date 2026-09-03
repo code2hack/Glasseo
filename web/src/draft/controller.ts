@@ -128,10 +128,6 @@ export class DraftController {
       this.publish();
       return;
     }
-    restored = {
-      ...restored,
-      transient: currentSession.transient,
-    };
     this.pendingActions = [];
     this.hydratingGeneration = null;
     const changed = restored.record.revision !== record.revision;
@@ -182,6 +178,29 @@ export class DraftController {
     if (typeof text !== "string")
       return Promise.reject(new Error("Invalid Draft text"));
     return this.transition({ type: "replace-text", text }).then(() => {});
+  }
+
+  replaceTextRange(start: number, end: number, text: string): Promise<void> {
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      typeof text !== "string"
+    )
+      return Promise.reject(new Error("Invalid Draft text range"));
+    return this.transition({
+      type: "replace-text-range",
+      start,
+      end,
+      text,
+    }).then(() => {});
+  }
+
+  insertCommittedText(text: string): Promise<void> {
+    if (typeof text !== "string")
+      return Promise.reject(new Error("Invalid committed Draft text"));
+    return this.transition({ type: "insert-committed-text", text }).then(
+      () => {},
+    );
   }
 
   setTextCursor(textOffset: number): Promise<void> {
@@ -383,7 +402,6 @@ export class DraftController {
       this.publish();
       return;
     }
-    restored = { ...restored, transient: currentSession.transient };
     const changed = restored.record.revision !== record.revision;
     const restoredRecord = changed
       ? { ...restored.record, updatedAt: this.clock() }

@@ -1,6 +1,9 @@
 import { sameAgentKey } from "../directory/normalize";
 import type { AgentKey } from "../directory/types";
 import type { SemanticInput } from "../native/semanticInput";
+import { adjacentUnit, normalizeTextRange } from "./text/ranges";
+import { createTextEditorState, reduceTextEditor } from "./text/reducer";
+import type { TextEditorAction, TextEditorState } from "./text/types";
 import {
   DRAFT_SCHEMA_VERSION,
   type DraftAction,
@@ -34,6 +37,7 @@ export function defaultDraftTransientState(): DraftTransientState {
   return {
     mode: "edit",
     textSelection: null,
+    textCopyBuffer: "",
     selectedImageIds: [],
     provisionalText: null,
     wheelOpen: false,
@@ -82,7 +86,17 @@ export function reduceDraft(
             action.direction === "up" ? "UP" : "DOWN",
           );
     const next =
-      record === state.record ? state : { ...state, record: revise(record) };
+      record === state.record
+        ? state
+        : {
+            ...state,
+            record: revise(record),
+            transient:
+              record.activeArea !== state.record.activeArea &&
+              state.record.activeArea === "text"
+                ? { ...state.transient, textSelection: null }
+                : state.transient,
+          };
     return transition(state, next, true);
   }
   if (action.type === "set-requests") {
@@ -122,40 +136,39 @@ export function reduceDraft(
     };
     return transition(state, next, true);
   }
-  if (action.type === "replace-text" || action.type === "set-text-cursor") {
-    const record =
-      action.type === "replace-text"
-        ? {
-            ...state.record,
-            text: action.text,
-            cursors: {
-              ...state.record.cursors,
-              textOffset: validTextOffset(
-                action.text,
-                state.record.cursors.textOffset,
-              ),
-            },
-          }
-        : {
-            ...state.record,
-            cursors: {
-              ...state.record.cursors,
-              textOffset: validTextOffset(state.record.text, action.textOffset),
-            },
-          };
+  if (
+    action.type === "replace-text" ||
+    action.type === "replace-text-range" ||
+    action.type === "insert-committed-text"
+  )
+    return reduceText(state, textAction(action));
+  if (action.type === "set-text-cursor") {
+    const record = {
+      ...state.record,
+      cursors: {
+        ...state.record.cursors,
+        textOffset: validTextOffset(state.record.text, action.textOffset),
+      },
+    };
     const unchanged =
-      action.type === "replace-text"
-        ? state.record.text === record.text &&
-          state.record.cursors.textOffset === record.cursors.textOffset
-        : state.record.cursors.textOffset === record.cursors.textOffset;
+      state.record.cursors.textOffset === record.cursors.textOffset;
     const next = unchanged ? state : { ...state, record: revise(record) };
     return transition(state, next, true);
   }
   if (!isDraftNavigationInput(action))
-    return { state, effect: "none", handled: false };
+    return action.type === "semantic-input" &&
+      state.record.activeArea === "text"
+      ? reduceText(state, action)
+      : { state, effect: "none", handled: false };
   if (state.handledInteractionIds.includes(action.interactionId))
     return { state, effect: "none", handled: true };
 
+  if (state.record.activeArea === "text") {
+    const text = reduceText(state, action);
+    if (text.handled) return text;
+    if (action.control === "UP" || action.control === "DOWN")
+      return { state, effect: "none", handled: false };
+  }
   let record = state.record;
   if (action.control === "LEFT" || action.control === "RIGHT")
     record = cycle(record, availableDraftAreas(state), action.control);
@@ -165,6 +178,11 @@ export function reduceDraft(
   const next = {
     ...state,
     record: changed ? revise(record) : record,
+    transient:
+      record.activeArea !== state.record.activeArea &&
+      state.record.activeArea === "text"
+        ? { ...state.transient, textSelection: null }
+        : state.transient,
     handledInteractionIds: [
       // ponytail: 64 IDs cover native replay; persist a ledger only if replay spans sessions.
       ...state.handledInteractionIds.slice(-63),
@@ -176,11 +194,18 @@ export function reduceDraft(
 
 export function isDraftNavigationInput(
   action: DraftAction,
-): action is SemanticInput {
+): action is SemanticInput &
+  Readonly<{
+    control: "LEFT" | "RIGHT" | "UP" | "DOWN";
+    action: "BEGIN" | "SHORT";
+  }> {
   return (
     action.type === "semantic-input" &&
     (action.action === "BEGIN" || action.action === "SHORT") &&
-    ["LEFT", "RIGHT", "UP", "DOWN"].includes(action.control)
+    (action.control === "LEFT" ||
+      action.control === "RIGHT" ||
+      action.control === "UP" ||
+      action.control === "DOWN")
   );
 }
 
@@ -290,7 +315,19 @@ function move(
   requestIds: readonly string[],
   direction: "UP" | "DOWN",
 ): DraftRecord {
-  if (record.activeArea === "text") return record;
+  if (record.activeArea === "text") {
+    const offset = adjacentUnit(
+      record.text,
+      record.cursors.textOffset,
+      direction === "UP" ? "up" : "down",
+    ).start;
+    return offset === record.cursors.textOffset
+      ? record
+      : {
+          ...record,
+          cursors: { ...record.cursors, textOffset: offset },
+        };
+  }
   const ids =
     record.activeArea === "request"
       ? requestIds
@@ -323,15 +360,72 @@ function revise(record: DraftRecord): DraftRecord {
 }
 
 function validTextOffset(value: string, offset: number): number {
-  let result = Math.max(0, Math.min(value.length, offset));
-  if (
-    result > 0 &&
-    result < value.length &&
-    /[\uD800-\uDBFF]/.test(value[result - 1]!) &&
-    /[\uDC00-\uDFFF]/.test(value[result]!)
-  )
-    result--;
-  return result;
+  return normalizeTextRange(value, offset, offset).start;
+}
+
+function reduceText(
+  state: DraftSessionState,
+  action: TextEditorAction,
+): DraftTransition {
+  const result = reduceTextEditor(textState(state), action);
+  if (!result.handled) return { state, effect: "none", handled: false };
+  const changedRecord =
+    result.state.text !== state.record.text ||
+    result.state.cursorOffset !== state.record.cursors.textOffset;
+  const record = changedRecord
+    ? revise({
+        ...state.record,
+        text: result.state.text,
+        cursors: {
+          ...state.record.cursors,
+          textOffset: result.state.cursorOffset,
+        },
+      })
+    : state.record;
+  return {
+    state: {
+      ...state,
+      record,
+      transient: {
+        ...state.transient,
+        textSelection: result.state.selection,
+        textCopyBuffer: result.state.copyBuffer,
+      },
+      handledInteractionIds: result.state.handledInteractionIds,
+    },
+    effect: changedRecord ? "persist" : "none",
+    handled: true,
+  };
+}
+
+function textState(state: DraftSessionState): TextEditorState {
+  return {
+    ...createTextEditorState(
+      state.record.text,
+      state.record.cursors.textOffset,
+    ),
+    selection: state.transient.textSelection,
+    copyBuffer: state.transient.textCopyBuffer,
+    handledInteractionIds: state.handledInteractionIds,
+  };
+}
+
+function textAction(
+  action: Extract<
+    DraftAction,
+    {
+      type: "replace-text" | "replace-text-range" | "insert-committed-text";
+    }
+  >,
+): TextEditorAction {
+  return action.type === "replace-text-range"
+    ? {
+        type: "replace-range",
+        start: action.start,
+        end: action.end,
+        text: action.text,
+      }
+    : action;
 }
 
 function validateImage(value: unknown): DraftImageRef {

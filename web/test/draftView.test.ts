@@ -72,6 +72,132 @@ test("Draft body keeps keyed areas, routes owned input, and redacts diagnostics"
   assert.equal(controller.snapshot().current, null);
 });
 
+test("Draft Text renders stable safe tokens and routes only the accepted grammar", async () => {
+  installDom();
+  const key = { serverId: "alpha", agentId: "text" };
+  let requests: string[] = [];
+  const controller = new DraftController(new MemoryStorage());
+  const root = new FakeElement("main") as unknown as HTMLElement;
+  const view = new DraftDestinationBody(controller, () => requests);
+  view.mount(root);
+  view.update(context(key));
+  await tick();
+  const text = "<b>one</b>  two\n👩🏽‍💻";
+  await controller.replaceText(text);
+  await tick();
+
+  const list = (root.children[0] as unknown as FakeElement).children[0]!;
+  const textArea = list.children.find(
+    ({ dataset }) => dataset.area === "text",
+  )!;
+  const textUnits = textArea.children[1]!;
+  assert.equal(
+    textUnits.children.map(({ textContent }) => textContent).join(""),
+    text,
+  );
+  const stable = textUnits.children.find(
+    ({ textContent }) => textContent === "one",
+  )!;
+  requests = ["request"];
+  view.update(context(key));
+  await tick();
+  await controller.appendImageRefs([
+    {
+      id: "image",
+      token: "token",
+      mimeType: "image/jpeg",
+      capturedAt: 1,
+    },
+  ]);
+  await tick();
+  assert.equal(
+    textUnits.children.find(({ textContent }) => textContent === "one"),
+    stable,
+  );
+
+  const requestUnit = list.children.find(
+    ({ dataset }) => dataset.area === "request",
+  )!.children[1]!.children[0]!;
+  const imageUnit = list.children.find(
+    ({ dataset }) => dataset.area === "images",
+  )!.children[1]!.children[0]!;
+  for (const unit of [requestUnit, imageUnit, ...textUnits.children])
+    unit.scrollCalls = 0;
+
+  assert.equal(view.handleInput(input("DOWN", "BEGIN", 501)), true);
+  await tick();
+  assert.equal(requestUnit.scrollCalls, 0);
+  assert.equal(imageUnit.scrollCalls, 0);
+  assert.equal(
+    textUnits.children.some(({ scrollCalls }) => scrollCalls > 0),
+    true,
+  );
+  assert.equal(view.handleInput(input("PRIMARY", "SHORT", 502)), true);
+  assert.equal(view.handleInput(input("DOWN", "BEGIN", 503)), true);
+  await tick();
+  assert.equal(
+    textUnits.children.filter(({ className }) => className.includes("selected"))
+      .length,
+    2,
+  );
+  assert.equal(view.handleInput(input("PRIMARY", "SHORT", 504)), true);
+  await tick();
+  assert.equal(view.diagnostics().textSelectionActive, false);
+  assert.equal(view.diagnostics().textCopyLength > 0, true);
+
+  assert.equal(view.handleInput(input("PRIMARY", "SHORT", 505)), true);
+  assert.equal(view.handleInput(input("SECONDARY", "LONG", 506)), true);
+  await tick();
+  const afterCut = controller.snapshot().session!.record.text;
+  assert.notEqual(afterCut, text);
+  assert.equal(view.handleInput(input("SECONDARY", "DOUBLE", 507)), false);
+  assert.equal(controller.snapshot().session?.record.text, afterCut);
+  assert.equal(view.handleInput(input("LEFT", "BEGIN", 508)), true);
+  await tick();
+  assert.equal(controller.snapshot().session?.record.activeArea, "request");
+  assert.equal(controller.snapshot().session?.transient.textSelection, null);
+  view.dispose();
+});
+
+test("text edits scroll the attached replacement cursor to the nearest edge", async () => {
+  installDom();
+  const controller = new DraftController(new MemoryStorage());
+  const root = new FakeElement("main") as unknown as HTMLElement;
+  const view = new DraftDestinationBody(controller, () => []);
+  view.mount(root);
+  view.update(context({ serverId: "alpha", agentId: "wrapped" }));
+  await tick();
+  await controller.replaceText(
+    `one ${"antidisestablishmentarianism ".repeat(20)}\nlast`,
+  );
+  await tick();
+
+  const list = (root.children[0] as unknown as FakeElement).children[0]!;
+  const textUnits = list.children.find(
+    ({ dataset }) => dataset.area === "text",
+  )!.children[1]!;
+  for (const unit of textUnits.children) unit.scrollParents = [];
+
+  assert.equal(view.handleInput(input("SECONDARY", "LONG", 601)), true);
+  await tick();
+
+  const cursor = textUnits.children.find(({ className }) =>
+    className.split(" ").includes("cursor"),
+  )!;
+  assert.equal(cursor.scrollParents.length > 0, true);
+  assert.equal(
+    cursor.scrollParents.every((parent) => parent === textUnits),
+    true,
+  );
+  assert.equal(
+    cursor.scrollOptions.every(
+      (options) => options.block === "nearest" && options.inline === "nearest",
+    ),
+    true,
+  );
+  view.dispose();
+});
+
 function context(key: AgentKey) {
   return {
     destination: { kind: "agent" as const, key, pane: "draft" as const },
@@ -130,6 +256,8 @@ class FakeElement {
   hidden = false;
   scrollTop = 0;
   scrollCalls = 0;
+  scrollParents: (FakeElement | null)[] = [];
+  scrollOptions: ScrollIntoViewOptions[] = [];
   constructor(readonly tagName: string) {}
   get scrollHeight(): number {
     return this.children.length * 48;
@@ -166,8 +294,10 @@ class FakeElement {
   }
   setAttribute(): void {}
   removeAttribute(): void {}
-  scrollIntoView(): void {
+  scrollIntoView(options?: ScrollIntoViewOptions): void {
     this.scrollCalls++;
+    this.scrollParents.push(this.parent);
+    if (options) this.scrollOptions.push(options);
   }
 }
 

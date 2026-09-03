@@ -34,6 +34,11 @@ test("Web build removes obsolete generated assets", async () => {
     "ui-acceptance-entry.js.map",
   ]);
   assert.deepEqual((await readdir(`${output}/draft`)).sort(), [
+    "text",
+    "ui-acceptance-entry.js",
+    "ui-acceptance-entry.js.map",
+  ]);
+  assert.deepEqual((await readdir(`${output}/draft/text`)).sort(), [
     "ui-acceptance-entry.js",
     "ui-acceptance-entry.js.map",
   ]);

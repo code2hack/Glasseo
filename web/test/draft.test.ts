@@ -35,7 +35,7 @@ test("Draft areas are canonical, dynamic, wrapping, and cursor-bounded", () => {
   assert.equal(state.record.cursors.requestId, "request-b");
   state = reduceDraft(state, input("RIGHT", 5)).state;
   assert.equal(state.record.activeArea, "text");
-  const textMove = reduceDraft(state, input("DOWN", 6));
+  const textMove = reduceDraft(state, input("DOWN", 6, "BEGIN"));
   assert.equal(textMove.state.record, state.record);
   assert.equal(textMove.effect, "none");
   assert.equal(textMove.handled, true);
@@ -166,6 +166,7 @@ test("controller isolates composite identities, restores persistent state, and r
   assert.deepEqual(controller.snapshot().session?.transient, {
     mode: "edit",
     textSelection: null,
+    textCopyBuffer: "",
     selectedImageIds: [],
     provisionalText: null,
     wheelOpen: false,
@@ -295,6 +296,74 @@ test("pending navigation and requests replay over a higher stored revision", asy
 
   assert.equal(await controller.handle(input("LEFT", 91, "SHORT")), true);
   assert.equal(controller.snapshot().session?.record.revision, 54);
+});
+
+test("Text edits update text and cursor atomically through DraftController", async () => {
+  const storage = new MemoryDraftStorage();
+  const controller = new DraftController(storage, () => 300);
+  const key = { serverId: "alpha", agentId: "text-agent" };
+  await controller.activate(key, ["request"]);
+  await controller.replaceText("one two three");
+
+  assert.equal(await controller.handle(input("PRIMARY", 201)), true);
+  assert.equal(await controller.handle(input("DOWN", 202, "BEGIN")), true);
+  assert.equal(await controller.handle(input("SECONDARY", 203, "LONG")), true);
+  const cut = controller.snapshot().session!;
+  assert.equal(cut.record.text, " three");
+  assert.equal(cut.record.cursors.textOffset, 1);
+  assert.equal(cut.transient.textCopyBuffer, "one two");
+  assert.equal(cut.transient.textSelection, null);
+  assert.deepEqual(storage.records.get(draftKey(key)), cut.record);
+
+  const revision = cut.record.revision;
+  assert.equal(await controller.handle(input("SECONDARY", 204)), false);
+  assert.equal(
+    await controller.handle(input("SECONDARY", 205, "DOUBLE")),
+    false,
+  );
+  assert.equal(controller.snapshot().session?.record.revision, revision);
+  await controller.insertCommittedText("new ");
+  assert.equal(controller.snapshot().session?.record.text, " new three");
+  await controller.replaceTextRange(1, 4, "next");
+  assert.equal(controller.snapshot().session?.record.text, " next three");
+});
+
+test("hydration replays Text selection and cut over newer stored authority", async () => {
+  const storage = new MemoryDraftStorage();
+  const key = { serverId: "alpha", agentId: "hydrating-text" };
+  const read = deferred<unknown | null>();
+  storage.loads.set(draftKey(key), read.promise);
+  const controller = new DraftController(storage, () => 400);
+  const activating = controller.activate(key);
+  assert.equal(await controller.handle(input("PRIMARY", 301)), true);
+  assert.equal(await controller.handle(input("DOWN", 302, "BEGIN")), true);
+  assert.equal(await controller.handle(input("SECONDARY", 303, "LONG")), true);
+  read.resolve(draft({ key, revision: 50, text: "stored text" }));
+  await activating;
+
+  const restored = controller.snapshot().session!;
+  assert.equal(restored.record.text, "");
+  assert.equal(restored.record.revision, 52);
+  assert.equal(restored.transient.textCopyBuffer, "stored text");
+  assert.equal(restored.transient.textSelection, null);
+  assert.deepEqual(restored.handledInteractionIds, [301, 302, 303]);
+  assert.deepEqual(storage.records.get(draftKey(key)), restored.record);
+});
+
+test("leaving Text and switching Agents clear transient selection and copy", async () => {
+  const controller = new DraftController(new MemoryDraftStorage());
+  const alpha = { serverId: "alpha", agentId: "one" };
+  await controller.activate(alpha, ["request"]);
+  await controller.replaceText("one two");
+  await controller.handle(input("PRIMARY", 401));
+  await controller.handle(input("PRIMARY", 402));
+  assert.equal(controller.snapshot().session?.transient.textCopyBuffer, "one");
+  await controller.handle(input("PRIMARY", 403));
+  await controller.handle(input("LEFT", 404, "BEGIN"));
+  assert.equal(controller.snapshot().session?.record.activeArea, "request");
+  assert.equal(controller.snapshot().session?.transient.textSelection, null);
+  await controller.activate({ serverId: "alpha", agentId: "two" });
+  assert.equal(controller.snapshot().session?.transient.textCopyBuffer, "");
 });
 
 test("a transient read failure remains retryable and never caches a blank Draft", async () => {
