@@ -177,10 +177,36 @@ test("Config reducer handles terminal controls once, clamps movement, folds, act
     serverId: "alpha",
     agentId: "agent-a",
   });
+  const moved = reduceConfig(state, directory, input("DOWN", 10)).state;
+  assert.equal(reduceConfig(moved, directory, input("DOWN", 10)).state, moved);
+  for (const action of ["UPDATE", "END", "CANCEL"] as const)
+    assert.equal(
+      reduceConfig(moved, directory, input("DOWN", 10, action)).state,
+      moved,
+    );
+  for (const [action, interactionId] of [
+    ["UPDATE", 20],
+    ["END", 21],
+    ["CANCEL", 22],
+  ] as const)
+    assert.equal(
+      reduceConfig(moved, directory, input("DOWN", interactionId, action))
+        .state,
+      moved,
+    );
   assert.equal(
-    reduceConfig(state, directory, { ...input("DOWN", 10), action: "BEGIN" })
-      .state,
-    state,
+    reduceConfig(moved, directory, input("DOWN", 11, "SHORT")).state,
+    moved,
+  );
+  const lower = reduceConfig(
+    { ...moved, focusedRowId: HID_KEYS_SECTION_ID },
+    directory,
+    input("DOWN", 12),
+  ).state;
+  assert.equal(lower.focusedRowId, HID_KEYS_SECTION_ID);
+  assert.equal(
+    reduceConfig(lower, directory, input("PRIMARY", 13, "BEGIN")).state,
+    lower,
   );
 
   const removed = snapshot([], []);
@@ -668,11 +694,14 @@ function agent(
 function input(
   control: SemanticInput["control"],
   interactionId: number,
+  action: SemanticInput["action"] = control === "UP" || control === "DOWN"
+    ? "BEGIN"
+    : "SHORT",
 ): SemanticInput {
   return {
     type: "semantic-input",
     control,
-    action: "SHORT",
+    action,
     interactionId,
     timeMillis: 1,
   };

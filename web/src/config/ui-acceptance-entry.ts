@@ -219,7 +219,7 @@ function input(
   return {
     type: "semantic-input",
     control,
-    action: "SHORT",
+    action: control === "UP" || control === "DOWN" ? "BEGIN" : "SHORT",
     interactionId,
     timeMillis: interactionId,
   };

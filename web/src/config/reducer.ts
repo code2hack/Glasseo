@@ -87,12 +87,13 @@ export function reduceConfig(
   directory: GlobalAgentDirectorySnapshot,
   input: SemanticInput,
 ): ConfigTransition {
+  const directional = input.control === "UP" || input.control === "DOWN";
   if (
-    input.action !== "SHORT" ||
+    input.action !== (directional ? "BEGIN" : "SHORT") ||
     state.handledInteractionIds.includes(input.interactionId)
   )
     return { state, activate: null };
-  if (input.control === "UP" || input.control === "DOWN") {
+  if (directional) {
     const index = state.projection.rows.findIndex(
       (row) => row.id === state.focusedRowId,
     );

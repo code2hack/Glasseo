@@ -21,10 +21,14 @@ class ConfigInstrumentationTest {
             assertTrue(ProbeState.await(60)?.isPassing() == true)
             scenario.onActivity {
                 it.emitForTest(SemanticInteraction(SemanticControl.COMMAND, SemanticAction.LONG, 900, 900))
-                it.emitForTest(SemanticInteraction(SemanticControl.DOWN, SemanticAction.SHORT, 901, 901))
+                val owner = PhysicalOwner(PhysicalSource.BUILT_IN, -10, 20)
+                it.submitPhysicalInputForTest(PhysicalInput(owner, SemanticControl.DOWN, PhysicalAction.DOWN, 901))
+                it.submitPhysicalInputForTest(PhysicalInput(owner, SemanticControl.DOWN, PhysicalAction.REPEAT, 902))
+                it.submitPhysicalInputForTest(PhysicalInput(owner, SemanticControl.DOWN, PhysicalAction.UP, 903))
             }
             val product = awaitProductConfig(scenario)
-            assertEquals(901, product.getInt("interactionId"))
+            assertEquals(1, product.getInt("interactionId"))
+            assertEquals("BEGIN", product.getString("action"))
             assertEquals("config", product.getString("destination"))
             assertEquals(480, product.getInt("width"))
             assertEquals(640, product.getInt("height"))
@@ -108,9 +112,10 @@ class ConfigInstrumentationTest {
               const body = document.querySelector('#agent-body')?.getBoundingClientRect()
               const header = document.querySelector('#agent-header')?.getBoundingClientRect()
               const viewport = document.querySelector('.config-viewport')
-              if (diagnostics?.config?.lastInteractionId !== 901 || !body || !header || !viewport) return ''
+              if (diagnostics?.config?.lastInteractionId !== 1 || !body || !header || !viewport) return ''
               return JSON.stringify({
                 interactionId: diagnostics.config.lastInteractionId,
+                action: diagnostics.config.lastAction,
                 destination: diagnostics.destination,
                 width: innerWidth,
                 height: innerHeight,
