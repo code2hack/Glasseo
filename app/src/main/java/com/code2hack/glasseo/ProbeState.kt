@@ -38,7 +38,13 @@ object ProbeState {
     @Synchronized fun record(message: BridgeMessage) {
         when (message) {
             BridgeMessage.Hello -> helloCount++
-            BridgeMessage.ScannerStart, BridgeMessage.ScannerCancel -> Unit
+            BridgeMessage.ScannerStart,
+            BridgeMessage.ScannerCancel,
+            BridgeMessage.HidBindingsGet,
+            is BridgeMessage.HidBindingCaptureStart,
+            is BridgeMessage.HidBindingCaptureCancel,
+            is BridgeMessage.HidBindingsReset,
+            -> Unit
             is BridgeMessage.HostMediaCleanup -> Unit
             is BridgeMessage.ProbeResult -> {
                 result = message

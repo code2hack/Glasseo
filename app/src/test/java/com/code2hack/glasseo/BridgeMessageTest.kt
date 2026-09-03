@@ -11,6 +11,21 @@ class BridgeMessageTest {
         assertEquals(BridgeMessage.Hello, BridgeMessage.parse("{\"type\":\"hello\"}"))
         assertEquals(BridgeMessage.ScannerStart, BridgeMessage.parse("{\"type\":\"scanner-start\"}"))
         assertEquals(BridgeMessage.ScannerCancel, BridgeMessage.parse("{\"type\":\"scanner-cancel\"}"))
+        assertEquals(BridgeMessage.HidBindingsGet, BridgeMessage.parse("{\"type\":\"hid-bindings-get\"}"))
+        assertEquals(
+            BridgeMessage.HidBindingCaptureStart(SemanticControl.LEFT, "hid_1"),
+            BridgeMessage.parse(
+                "{\"type\":\"hid-binding-capture-start\",\"control\":\"LEFT\",\"requestId\":\"hid_1\"}",
+            ),
+        )
+        assertEquals(
+            BridgeMessage.HidBindingCaptureCancel("hid_1"),
+            BridgeMessage.parse("{\"type\":\"hid-binding-capture-cancel\",\"requestId\":\"hid_1\"}"),
+        )
+        assertEquals(
+            BridgeMessage.HidBindingsReset("hid_2"),
+            BridgeMessage.parse("{\"type\":\"hid-bindings-reset\",\"requestId\":\"hid_2\"}"),
+        )
         assertEquals(
             BridgeMessage.HostMediaCleanup(9, "host-a"),
             BridgeMessage.parse("{\"type\":\"host-media-cleanup\",\"requestId\":9,\"serverId\":\"host-a\"}"),
@@ -58,6 +73,8 @@ class BridgeMessageTest {
             "{\"type\":\"qualification-start\",\"mode\":\"OTHER\"}",
             "{\"type\":\"qualification-rendered\",\"sessionId\":\"\",\"revision\":7," +
                 "\"stepIndex\":5,\"phase\":\"AWAITING_FIRST\"}",
+            "{\"type\":\"hid-binding-capture-start\",\"control\":\"LEFT\",\"requestId\":\"bad id\"}",
+            "{\"type\":\"hid-bindings-reset\",\"requestId\":\"hid_2\",\"extra\":true}",
             passingProbe().replace("\"passed\":true", "\"passed\":\"true\""),
             passingProbe().replace("\"secureRandom\":true", "\"secureRandom\":\"true\""),
         ).forEach {

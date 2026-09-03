@@ -51,6 +51,15 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         emit(inputController.advance(now))
         scheduleDeadline()
     }
+    private val hidBindingCaptureTimeout = Runnable {
+        val capture = glasseoApplication.hidBindingCapture
+        val before = capture.snapshot
+        val after = capture.advance(SystemClock.uptimeMillis())
+        if (after != before) {
+            postHidBindingCaptureState()
+            trace("hid-binding-capture", "phase=${after.phase} error=${after.error}")
+        }
+    }
     private val finishBuiltInCapture = Runnable { finalizeBuiltInAttempt() }
     private val externalDevices = mutableSetOf<Int>()
     private var builtInCapture: InputCapture? = null
@@ -182,6 +191,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         super.onResume()
         trace("lifecycle", "resume")
         if (webReady) postActiveQualificationState("resume")
+        if (webReady) postHidBindingsState()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -220,6 +230,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (::qrScannerController.isInitialized) qrScannerController.cancel()
         handler.removeCallbacks(longPressCheck)
         handler.removeCallbacks(finishBuiltInCapture)
+        handler.removeCallbacks(hidBindingCaptureTimeout)
         hidAttemptWatchdog?.let(handler::removeCallbacks)
         if (hidAttemptReceiverRegistered) unregisterReceiver(hidAttemptReceiver)
         nonOrderedBroadcastObservation.end()
@@ -257,8 +268,16 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             }
             return true
         }
+        if (source == PhysicalSource.HID && recordedHid != null && glasseoApplication.hidBindingCapture.isActive) {
+            val snapshot = glasseoApplication.hidBindingCapture.handle(recordedHid.first)
+            recordHidDecision(recordedHid.second.sequence, "capture:${snapshot.phase.name.lowercase()}")
+            postHidBindingCaptureState()
+            if (!glasseoApplication.hidBindingCapture.isActive) postHidBindingsState()
+            scheduleHidBindingCaptureTimeout()
+            return true
+        }
         val control = when (source) {
-            PhysicalSource.HID -> if (captureInput) glasseoApplication.hidBindings.controlFor(event.hidIdentity()) else null
+            PhysicalSource.HID -> glasseoApplication.hidBindingStore.controlFor(event.hidIdentity())
             PhysicalSource.BUILT_IN -> null
             null -> null
         }
@@ -267,7 +286,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
             return true
         }
         recordedHid?.let { recordHidDecision(it.second.sequence, "rejected:no-active-HID-binding") }
-        return if (consumeUnmapped) true else super.dispatchKeyEvent(event)
+        return if (source == PhysicalSource.HID || consumeUnmapped) true else super.dispatchKeyEvent(event)
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -297,11 +316,13 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
     override fun onInputDeviceAdded(deviceId: Int) {
         rememberDevice(deviceId)
         traceDevice("input-device-added", deviceId)
+        postHidBindingsState()
     }
 
     override fun onInputDeviceChanged(deviceId: Int) {
         rememberDevice(deviceId)
         traceDevice("input-device-changed", deviceId)
+        postHidBindingsState()
     }
 
     override fun onInputDeviceRemoved(deviceId: Int) {
@@ -314,6 +335,11 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (source == PhysicalSource.HID && glasseoApplication.hidQualificationFlow != null) {
             glasseoApplication.hidQualificationFlow?.cancelCapture("disconnect")
             postHidQualificationState("disconnect")
+        }
+        if (source == PhysicalSource.HID) {
+            glasseoApplication.hidBindingCapture.cancelDevice(deviceId)
+            postHidBindingCaptureState()
+            postHidBindingsState()
         }
         scheduleDeadline()
         trace(
@@ -359,6 +385,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                         BridgeMessage.Hello -> {
                             postActiveQualificationState("web-ready")
                             postHidInputTrace()
+                            postHidBindingsState()
                         }
                         BridgeMessage.ScannerStart -> qrScannerController.start()
                         BridgeMessage.ScannerCancel -> qrScannerController.cancel()
@@ -369,6 +396,10 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
                                 .put("deleted", 0)
                                 .toString(),
                         )
+                        BridgeMessage.HidBindingsGet -> postHidBindingsState()
+                        is BridgeMessage.HidBindingCaptureStart -> startHidBindingCapture(it)
+                        is BridgeMessage.HidBindingCaptureCancel -> cancelHidBindingCapture(it.requestId, "cancelled")
+                        is BridgeMessage.HidBindingsReset -> resetHidBindings(it.requestId)
                         is BridgeMessage.QualificationStart -> if (captureInput) startQualification(it.mode)
                         is BridgeMessage.QualificationRendered -> acknowledgeQualificationRender(it)
                         is BridgeMessage.HidQualificationRendered -> acknowledgeHidQualificationRender(it)
@@ -386,6 +417,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                 webReady = false
+                cancelHidBindingCapture(reason = "page_reload")
                 qualificationSession?.suspendCapture()
                 glasseoApplication.hidQualificationFlow?.suspendCapture()
                 trace("page-started", "trusted=${OriginPolicy.allowsMainFrame(url)}")
@@ -455,6 +487,59 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         )
         scheduleDeadline()
         return true
+    }
+
+    private fun startHidBindingCapture(message: BridgeMessage.HidBindingCaptureStart) {
+        val now = SystemClock.uptimeMillis()
+        emit(inputController.cancelAll(now))
+        handler.removeCallbacks(longPressCheck)
+        val snapshot = glasseoApplication.hidBindingCapture.start(message.control, message.requestId, now)
+        trace("hid-binding-capture", "control=${message.control} requestId=${message.requestId} phase=${snapshot.phase}")
+        postHidBindingCaptureState()
+        scheduleHidBindingCaptureTimeout()
+    }
+
+    private fun cancelHidBindingCapture(requestId: String? = null, reason: String) {
+        val before = glasseoApplication.hidBindingCapture.snapshot
+        val after = glasseoApplication.hidBindingCapture.cancel(requestId, reason)
+        handler.removeCallbacks(hidBindingCaptureTimeout)
+        if (after != before) {
+            trace("hid-binding-capture", "phase=${after.phase} error=${after.error}")
+            postHidBindingCaptureState()
+        }
+    }
+
+    private fun resetHidBindings(requestId: String) {
+        emit(inputController.cancelAll(SystemClock.uptimeMillis()))
+        handler.removeCallbacks(longPressCheck)
+        cancelHidBindingCapture(reason = "reset")
+        val mutation = glasseoApplication.hidBindingStore.reset()
+        postNative(NativeHidBindingMessage.reset(requestId, mutation))
+        postHidBindingsState()
+        trace("hid-bindings-reset", "requestId=$requestId status=${mutation.status} revision=${mutation.profile.revision}")
+    }
+
+    private fun scheduleHidBindingCaptureTimeout() {
+        handler.removeCallbacks(hidBindingCaptureTimeout)
+        glasseoApplication.hidBindingCapture.snapshot.deadlineMillis?.let {
+            handler.postAtTime(hidBindingCaptureTimeout, it)
+        }
+    }
+
+    private fun postHidBindingCaptureState() {
+        postNative(NativeHidBindingMessage.capture(glasseoApplication.hidBindingCapture.snapshot))
+    }
+
+    private fun postHidBindingsState() {
+        postNative(
+            NativeHidBindingMessage.state(glasseoApplication.hidBindingStore.profile) { identity ->
+                inputManager.inputDeviceIds.asSequence()
+                    .mapNotNull(inputManager::getInputDevice)
+                    .filter { it.isExternal && !it.isVirtual }
+                    .map { HidPeripheralIdentity(it.descriptor, it.vendorId, it.productId, it.sources) }
+                    .any { it.sameDevice(identity.peripheral) }
+            },
+        )
     }
 
     private fun startQualification(mode: QualificationMode) {
@@ -942,6 +1027,7 @@ class MainActivity : Activity(), InputManager.InputDeviceListener {
         if (!::inputController.isInitialized) return
         val now = SystemClock.uptimeMillis()
         emit(inputController.cancelAll(now))
+        cancelHidBindingCapture(reason = reason)
         val session = qualificationSession
         if (session != null) {
             if (builtInCapture != null || session.hasPendingOperation) {

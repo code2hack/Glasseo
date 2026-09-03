@@ -6,6 +6,13 @@ sealed interface BridgeMessage {
     data object Hello : BridgeMessage
     data object ScannerStart : BridgeMessage
     data object ScannerCancel : BridgeMessage
+    data object HidBindingsGet : BridgeMessage
+
+    data class HidBindingCaptureStart(val control: SemanticControl, val requestId: String) : BridgeMessage
+
+    data class HidBindingCaptureCancel(val requestId: String) : BridgeMessage
+
+    data class HidBindingsReset(val requestId: String) : BridgeMessage
 
     data class HostMediaCleanup(val requestId: Long, val serverId: String) : BridgeMessage
 
@@ -76,6 +83,25 @@ sealed interface BridgeMessage {
                         json.getString("serverId").also { require(it.isNotEmpty()) },
                     )
                 }
+                "hid-bindings-get" -> {
+                    require(json.length() == 1) { "Malformed HID bindings get" }
+                    HidBindingsGet
+                }
+                "hid-binding-capture-start" -> {
+                    require(json.length() == 3) { "Malformed HID capture start" }
+                    HidBindingCaptureStart(
+                        SemanticControl.valueOf(json.getString("control")),
+                        json.requestId(),
+                    )
+                }
+                "hid-binding-capture-cancel" -> {
+                    require(json.length() == 2) { "Malformed HID capture cancel" }
+                    HidBindingCaptureCancel(json.requestId())
+                }
+                "hid-bindings-reset" -> {
+                    require(json.length() == 2) { "Malformed HID bindings reset" }
+                    HidBindingsReset(json.requestId())
+                }
                 "probe-result" -> parseProbe(json)
                 "qualification-start" -> {
                     require(json.length() == 2) { "Malformed qualification start" }
@@ -131,6 +157,10 @@ sealed interface BridgeMessage {
             require(checks.keys == REQUIRED_CHECKS && details.keys == REQUIRED_CHECKS) { "Unexpected probe checks" }
             require(passed == checks.values.all { it }) { "Contradictory probe result" }
             return ProbeResult(passed, checks, details)
+        }
+
+        private fun JSONObject.requestId(): String = getString("requestId").also {
+            require(it.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid request ID" }
         }
     }
 }
