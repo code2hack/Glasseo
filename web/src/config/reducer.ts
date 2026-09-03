@@ -7,6 +7,7 @@ import { projectConfig, WORKSPACES_SECTION_ID } from "./project";
 import type {
   ConfigRowAction,
   ConfigRowId,
+  ConfigSectionProjector,
   ConfigSectionRows,
   ConfigState,
 } from "./types";
@@ -19,13 +20,17 @@ export type ConfigTransition = Readonly<{
 
 export function initialConfigState(
   directory: GlobalAgentDirectorySnapshot,
-  sectionRows: ConfigSectionRows = new Map(),
+  sectionRows: ConfigSectionProjector = emptySectionRows,
 ): ConfigState {
   const expandedRowIds = new Set<ConfigRowId>([WORKSPACES_SECTION_ID]);
   return {
     focusedRowId: WORKSPACES_SECTION_ID,
     expandedRowIds,
-    projection: projectConfig(directory, expandedRowIds, sectionRows),
+    projection: projectConfig(
+      directory,
+      expandedRowIds,
+      sectionRows(expandedRowIds),
+    ),
     handledInteractionIds: [],
     lastInteractionId: null,
     lastInput: null,
@@ -39,15 +44,15 @@ export function restoreConfigState(
   expandedRowIds: readonly ConfigRowId[],
   focusedRowId: ConfigRowId | null,
   revision: number,
-  sectionRows: ConfigSectionRows = new Map(),
+  sectionRows: ConfigSectionProjector = emptySectionRows,
 ): ConfigState {
   let expanded = new Set(expandedRowIds);
-  let projection = projectConfig(directory, expanded, sectionRows);
+  let projection = projectConfig(directory, expanded, sectionRows(expanded));
   if (!directory.restoring) {
     expanded = new Set(
       [...expanded].filter((id) => projection.allRows.get(id)?.foldable),
     );
-    projection = projectConfig(directory, expanded, sectionRows);
+    projection = projectConfig(directory, expanded, sectionRows(expanded));
   }
   return {
     ...state,
@@ -61,15 +66,15 @@ export function restoreConfigState(
 export function reprojectConfigState(
   state: ConfigState,
   directory: GlobalAgentDirectorySnapshot,
-  sectionRows: ConfigSectionRows = new Map(),
+  sectionRows: ConfigSectionProjector = emptySectionRows,
 ): ConfigState {
   let expanded = state.expandedRowIds;
-  let projection = projectConfig(directory, expanded, sectionRows);
+  let projection = projectConfig(directory, expanded, sectionRows(expanded));
   if (!directory.restoring) {
     expanded = new Set(
       [...expanded].filter((id) => projection.allRows.get(id)?.foldable),
     );
-    projection = projectConfig(directory, expanded, sectionRows);
+    projection = projectConfig(directory, expanded, sectionRows(expanded));
   }
   const focusedRowId = resolveFocus(state, projection, state.focusedRowId);
   const changed =
@@ -95,7 +100,7 @@ export function reduceConfig(
   state: ConfigState,
   directory: GlobalAgentDirectorySnapshot,
   input: SemanticInput,
-  sectionRows: ConfigSectionRows = new Map(),
+  sectionRows: ConfigSectionProjector = emptySectionRows,
 ): ConfigTransition {
   const directional = input.control === "UP" || input.control === "DOWN";
   if (
@@ -148,7 +153,7 @@ export function reduceConfig(
   const expanded = new Set(state.expandedRowIds);
   if (expanded.has(row.id)) expanded.delete(row.id);
   else expanded.add(row.id);
-  const projection = projectConfig(directory, expanded, sectionRows);
+  const projection = projectConfig(directory, expanded, sectionRows(expanded));
   return {
     state: handled(
       {
@@ -163,6 +168,10 @@ export function reduceConfig(
     activate: null,
     action: null,
   };
+}
+
+function emptySectionRows(): ConfigSectionRows {
+  return new Map();
 }
 
 function resolveFocus(

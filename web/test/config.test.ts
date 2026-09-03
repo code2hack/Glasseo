@@ -30,6 +30,8 @@ import {
 import { validateStoredConfigUi } from "../src/config/storage";
 import {
   CONFIG_UI_VERSION,
+  type ConfigRow,
+  type ConfigSectionProjector,
   type ConfigStorage,
   type StoredConfigUi,
 } from "../src/config/types";
@@ -212,6 +214,70 @@ test("Config reducer handles terminal controls once, clamps movement, folds, act
   const removed = snapshot([], []);
   const reprojected = reprojectConfigState(state, removed);
   assert.equal(reprojected.focusedRowId, HID_KEYS_SECTION_ID);
+});
+
+test("Config reducer projects provider rows from each candidate expansion set", () => {
+  const directory = snapshot([], []);
+  const hostId = rowId("hosts", "host", "alpha");
+  const childId = rowId("hosts", "status", "alpha");
+  const sectionRows: ConfigSectionProjector = (expanded) =>
+    new Map([
+      [
+        HOSTS_SECTION_ID,
+        providerHostRows(hostId, childId, expanded.has(hostId)),
+      ],
+    ]);
+  let state = restoreConfigState(
+    initialConfigState(directory, sectionRows),
+    directory,
+    [HOSTS_SECTION_ID],
+    hostId,
+    0,
+    sectionRows,
+  );
+  assert.equal(state.projection.allRows.get(hostId)?.expanded, false);
+  assert.equal(
+    state.projection.rows.some(({ id }) => id === childId),
+    false,
+  );
+
+  state = reduceConfig(
+    state,
+    directory,
+    input("PRIMARY", 1),
+    sectionRows,
+  ).state;
+  assert.equal(state.projection.allRows.get(hostId)?.expanded, true);
+  assert.equal(
+    state.projection.rows.some(({ id }) => id === childId),
+    true,
+  );
+
+  state = reduceConfig(
+    state,
+    directory,
+    input("PRIMARY", 2),
+    sectionRows,
+  ).state;
+  assert.equal(state.projection.allRows.get(hostId)?.expanded, false);
+  assert.equal(
+    state.projection.rows.some(({ id }) => id === childId),
+    false,
+  );
+
+  state = restoreConfigState(
+    state,
+    directory,
+    [HOSTS_SECTION_ID, hostId],
+    hostId,
+    3,
+    sectionRows,
+  );
+  assert.equal(state.projection.allRows.get(hostId)?.expanded, true);
+  assert.equal(
+    state.projection.rows.some(({ id }) => id === childId),
+    true,
+  );
 });
 
 test("Config reprojection retains focus through live host and Agent updates", () => {
@@ -572,6 +638,39 @@ function directoryFixture(): GlobalAgentDirectorySnapshot {
   put(alpha.workspaces, workspaceValue.workspaceId, workspaceValue);
   put(alpha.agents, agentValue.agentId, agentValue);
   return snapshot([alpha], [agentValue]);
+}
+
+function providerHostRows(
+  hostId: string,
+  childId: string,
+  expanded: boolean,
+): readonly ConfigRow[] {
+  return [
+    {
+      id: hostId,
+      parentId: HOSTS_SECTION_ID,
+      kind: "host",
+      depth: 1,
+      label: "Host Alpha",
+      detail: null,
+      foldable: true,
+      expanded,
+      agentKey: null,
+      action: null,
+    },
+    {
+      id: childId,
+      parentId: hostId,
+      kind: "detail",
+      depth: 2,
+      label: "Online",
+      detail: null,
+      foldable: false,
+      expanded: false,
+      agentKey: null,
+      action: null,
+    },
+  ];
 }
 
 function snapshot(

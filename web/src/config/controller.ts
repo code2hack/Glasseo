@@ -16,7 +16,7 @@ import {
   type ConfigActionResult,
   type ConfigRowAction,
   type ConfigSectionProvider,
-  type ConfigSectionRows,
+  type ConfigSectionProjector,
   type ConfigState,
   type ConfigStorage,
 } from "./types";
@@ -52,10 +52,7 @@ export class ConfigController {
     private readonly sections: readonly ConfigSectionProvider[] = [],
   ) {
     this.directoryValue = directory.snapshot();
-    this.stateValue = initialConfigState(
-      this.directoryValue,
-      this.sectionRows(),
-    );
+    this.stateValue = initialConfigState(this.directoryValue, this.sectionRows);
     this.unsubscribeDirectory = directory.subscribe((snapshot) => {
       this.directoryValue = snapshot;
       const revision = this.stateValue.revision;
@@ -68,13 +65,13 @@ export class ConfigController {
           stored.expandedRowIds,
           stored.focusedRowId,
           stored.revision,
-          this.sectionRows(),
+          this.sectionRows,
         );
       } else {
         this.stateValue = reprojectConfigState(
           this.stateValue,
           snapshot,
-          this.sectionRows(),
+          this.sectionRows,
         );
       }
       if (this.stateValue.revision !== revision) {
@@ -126,7 +123,7 @@ export class ConfigController {
         stored.expandedRowIds,
         stored.focusedRowId,
         stored.revision,
-        this.sectionRows(),
+        this.sectionRows,
       );
       this.publish();
     } catch {
@@ -139,7 +136,7 @@ export class ConfigController {
       this.stateValue,
       this.directoryValue,
       input,
-      this.sectionRows(),
+      this.sectionRows,
     );
     if (transition.state === this.stateValue) return false;
     const revision = this.stateValue.revision;
@@ -168,14 +165,14 @@ export class ConfigController {
     this.sections.forEach((section) => section.deactivate?.());
   }
 
-  private sectionRows(): ConfigSectionRows {
+  private readonly sectionRows: ConfigSectionProjector = (expanded) => {
     return new Map(
       this.sections.map((section) => [
         section.sectionId,
-        section.rows(this.stateValue?.expandedRowIds ?? new Set()),
+        section.rows(expanded),
       ]),
     );
-  }
+  };
 
   private reproject(): void {
     if (this.disposed) return;
@@ -183,7 +180,7 @@ export class ConfigController {
     this.stateValue = reprojectConfigState(
       previous,
       this.directoryValue,
-      this.sectionRows(),
+      this.sectionRows,
     );
     if (this.stateValue !== previous) this.publish();
   }
@@ -212,7 +209,7 @@ export class ConfigController {
       [...expanded],
       result.focusRowId ?? this.stateValue.focusedRowId,
       this.stateValue.revision + 1,
-      this.sectionRows(),
+      this.sectionRows,
     );
     this.mutation++;
     this.persist();

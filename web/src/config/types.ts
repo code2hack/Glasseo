@@ -36,6 +36,9 @@ export type ConfigRowAction = Readonly<{
 }>;
 
 export type ConfigSectionRows = ReadonlyMap<ConfigRowId, readonly ConfigRow[]>;
+export type ConfigSectionProjector = (
+  expandedRowIds: ReadonlySet<ConfigRowId>,
+) => ConfigSectionRows;
 
 export type ConfigActionResult = Readonly<{
   focusRowId?: ConfigRowId;

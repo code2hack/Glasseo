@@ -329,7 +329,7 @@ test("IndexedDB cancellation after transaction creation aborts before commit", a
   assert.equal(restarted.snapshot().hosts.length, 0);
 });
 
-test("hosts restore concurrently and expose independent connection states", async () => {
+test("hosts distinguish initial connection from reconnect and isolate peers", async () => {
   const storage = new MemoryStorage([profile("alpha"), profile("beta")]);
   const factory = new FakeFactory();
   factory.manual = true;
@@ -342,22 +342,26 @@ test("hosts restore concurrently and expose independent connection states", asyn
   );
   assert.equal(factory.runtimes.length, 2);
   factory.runtimes[0]?.resolveConnect();
-  factory.runtimes[1]?.rejectConnect();
+  factory.runtimes[1]?.resolveConnect();
   await restoring;
   assert.deepEqual(
     registry.snapshot().hosts.map((host) => host.status),
-    ["online", "error"],
+    ["online", "online"],
   );
   factory.runtimes[0]?.emit({ status: "disconnected", reason: "test" });
   assert.deepEqual(
     registry.snapshot().hosts.map((host) => host.status),
-    ["offline", "error"],
+    ["offline", "online"],
   );
   factory.runtimes[0]?.emit({ status: "connecting", attempt: 1 });
+  assert.deepEqual(
+    registry.snapshot().hosts.map((host) => host.status),
+    ["reconnecting", "online"],
+  );
   factory.runtimes[0]?.emit({ status: "connected" });
   assert.deepEqual(
     registry.snapshot().hosts.map((host) => host.status),
-    ["online", "error"],
+    ["online", "online"],
   );
 });
 
@@ -430,7 +434,7 @@ test("failed removal keeps live callbacks and retry fences only after success", 
   runtime.emit({ status: "disconnected", reason: "test" });
   assert.equal(registry.snapshot().hosts[0]?.status, "offline");
   runtime.emit({ status: "connecting", attempt: 1 });
-  assert.equal(registry.snapshot().hosts[0]?.status, "connecting");
+  assert.equal(registry.snapshot().hosts[0]?.status, "reconnecting");
   runtime.emit({ status: "connected" });
   assert.equal(registry.snapshot().hosts[0]?.status, "online");
 

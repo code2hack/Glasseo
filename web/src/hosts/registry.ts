@@ -256,7 +256,7 @@ export class HostRegistry {
     slot.unsubscribe = runtime.subscribeConnection((state) => {
       if (this.slots.get(profile.serverId)?.generation !== generation) return;
       const nextStatus =
-        state.status === "connecting" && state.attempt > 1
+        state.status === "connecting" && state.attempt > 0
           ? "reconnecting"
           : hostStatus(state);
       if (nextStatus === "online" && slot.status !== "online")
