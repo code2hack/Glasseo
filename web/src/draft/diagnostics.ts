@@ -1,5 +1,6 @@
 import { diagnosticHash } from "../app/hash";
 import { availableDraftAreas } from "./model";
+import { tokenizeText } from "./text/tokenize";
 import type { DraftSnapshot } from "./types";
 
 export function draftDiagnostics(snapshot: DraftSnapshot) {
@@ -24,5 +25,10 @@ export function draftDiagnostics(snapshot: DraftSnapshot) {
       ? diagnosticHash(session.record.cursors.imageId)
       : null,
     textOffset: session?.record.cursors.textOffset ?? 0,
+    textUnitCount: session ? tokenizeText(session.record.text).length : 0,
+    textSelectionActive: session?.transient.textSelection !== null,
+    textSelectionAnchor: session?.transient.textSelection?.anchorOffset ?? null,
+    textSelectionFocus: session?.transient.textSelection?.focusOffset ?? null,
+    textCopyLength: session?.transient.textCopyBuffer.length ?? 0,
   };
 }

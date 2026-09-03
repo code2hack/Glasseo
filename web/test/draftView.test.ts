@@ -72,6 +72,68 @@ test("Draft body keeps keyed areas, routes owned input, and redacts diagnostics"
   assert.equal(controller.snapshot().current, null);
 });
 
+test("Draft Text renders stable safe tokens and routes only the accepted grammar", async () => {
+  installDom();
+  const key = { serverId: "alpha", agentId: "text" };
+  let requests: string[] = [];
+  const controller = new DraftController(new MemoryStorage());
+  const root = new FakeElement("main") as unknown as HTMLElement;
+  const view = new DraftDestinationBody(controller, () => requests);
+  view.mount(root);
+  view.update(context(key));
+  await tick();
+  const text = "<b>one</b>  two\n👩🏽‍💻";
+  await controller.replaceText(text);
+  await tick();
+
+  const list = (root.children[0] as unknown as FakeElement).children[0]!;
+  const textArea = list.children.find(
+    ({ dataset }) => dataset.area === "text",
+  )!;
+  const textUnits = textArea.children[1]!;
+  assert.equal(
+    textUnits.children.map(({ textContent }) => textContent).join(""),
+    text,
+  );
+  const stable = textUnits.children.find(
+    ({ textContent }) => textContent === "one",
+  )!;
+  requests = ["request"];
+  view.update(context(key));
+  await tick();
+  assert.equal(
+    textUnits.children.find(({ textContent }) => textContent === "one"),
+    stable,
+  );
+
+  assert.equal(view.handleInput(input("DOWN", "BEGIN", 501)), true);
+  assert.equal(view.handleInput(input("PRIMARY", "SHORT", 502)), true);
+  assert.equal(view.handleInput(input("DOWN", "BEGIN", 503)), true);
+  await tick();
+  assert.equal(
+    textUnits.children.filter(({ className }) => className.includes("selected"))
+      .length,
+    2,
+  );
+  assert.equal(view.handleInput(input("PRIMARY", "SHORT", 504)), true);
+  await tick();
+  assert.equal(view.diagnostics().textSelectionActive, false);
+  assert.equal(view.diagnostics().textCopyLength > 0, true);
+
+  assert.equal(view.handleInput(input("PRIMARY", "SHORT", 505)), true);
+  assert.equal(view.handleInput(input("SECONDARY", "LONG", 506)), true);
+  await tick();
+  const afterCut = controller.snapshot().session!.record.text;
+  assert.notEqual(afterCut, text);
+  assert.equal(view.handleInput(input("SECONDARY", "DOUBLE", 507)), false);
+  assert.equal(controller.snapshot().session?.record.text, afterCut);
+  assert.equal(view.handleInput(input("LEFT", "BEGIN", 508)), true);
+  await tick();
+  assert.equal(controller.snapshot().session?.record.activeArea, "request");
+  assert.equal(controller.snapshot().session?.transient.textSelection, null);
+  view.dispose();
+});
+
 function context(key: AgentKey) {
   return {
     destination: { kind: "agent" as const, key, pane: "draft" as const },

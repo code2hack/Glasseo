@@ -9,6 +9,9 @@ import type { SemanticInput } from "../native/semanticInput";
 import type { DraftController } from "./controller";
 import { draftDiagnostics } from "./diagnostics";
 import { availableDraftAreas, isDraftNavigationInput } from "./model";
+import { projectTextSegments } from "./text/presentation";
+import { unitAtOffset } from "./text/ranges";
+import { isTextEditorInput } from "./text/reducer";
 import type { DraftArea, DraftSessionState, DraftSnapshot } from "./types";
 
 export type DraftViewController = Pick<
@@ -50,6 +53,8 @@ export class DraftDestinationBody implements DestinationBody {
   private state: DraftSnapshot;
   private unsubscribe: (() => void) | null = null;
   private renderRevision = 0;
+  private textRevision = 0;
+  private renderedText: string | null = null;
   private lastHandled: DraftViewDiagnostics["lastHandled"] = null;
 
   constructor(
@@ -86,6 +91,7 @@ export class DraftDestinationBody implements DestinationBody {
       return;
     }
     this.key = { ...key };
+    this.renderedText = null;
     void this.controller.activate(key, requestIds);
   }
 
@@ -93,7 +99,11 @@ export class DraftDestinationBody implements DestinationBody {
     if (
       !this.state.session ||
       !sameAgentKey(this.state.current, this.key) ||
-      !isDraftNavigationInput(input)
+      (!isDraftNavigationInput(input) &&
+        !(
+          this.state.session.record.activeArea === "text" &&
+          isTextEditorInput(input)
+        ))
     )
       return false;
     this.lastHandled = {
@@ -134,6 +144,10 @@ export class DraftDestinationBody implements DestinationBody {
   private render(): void {
     const session = this.state.session;
     if (!session || !sameAgentKey(this.state.current, this.key)) return;
+    if (this.renderedText !== session.record.text) {
+      this.renderedText = session.record.text;
+      this.textRevision++;
+    }
     const available = availableDraftAreas(session);
     const wanted = new Set(available);
     for (const [area, element] of this.areas)
@@ -165,7 +179,7 @@ export class DraftDestinationBody implements DestinationBody {
       const heading = document.createElement("h2");
       heading.textContent = areaLabel(area);
       const units = document.createElement("div");
-      units.className = "draft-units";
+      units.className = `draft-units${area === "text" ? " text" : ""}`;
       units.setAttribute("role", "listbox");
       section.append(heading, units);
       element = { section, units };
@@ -176,28 +190,38 @@ export class DraftDestinationBody implements DestinationBody {
       "aria-current",
       String(session.record.activeArea === area),
     );
-    const descriptors = unitsFor(area, session);
+    const descriptors = unitsFor(area, session, this.textRevision);
     const wanted = new Set(descriptors.map(({ id }) => `${area}:${id}`));
     for (const [id, unit] of this.units)
       if (id.startsWith(`${area}:`) && !wanted.has(id)) {
         unit.remove();
         this.units.delete(id);
       }
-    const ordered = descriptors.map(({ id, label, cursor }) => {
-      const key = `${area}:${id}`;
-      let unit = this.units.get(key);
-      if (!unit) {
-        unit = document.createElement("div");
-        unit.className = "draft-unit";
-        unit.setAttribute("role", "option");
-        unit.dataset.unitHash = diagnosticHash(key);
-        this.units.set(key, unit);
-      }
-      unit.className = `draft-unit${cursor ? " cursor" : ""}`;
-      unit.textContent = label;
-      unit.setAttribute("aria-selected", String(cursor));
-      return unit;
-    });
+    const ordered = descriptors.map(
+      ({ id, label, cursor, selected, option, empty, scroll }) => {
+        const key = `${area}:${id}`;
+        let unit = this.units.get(key);
+        if (!unit) {
+          unit = document.createElement(area === "text" ? "span" : "div");
+          unit.dataset.unitHash = diagnosticHash(key);
+          this.units.set(key, unit);
+        }
+        unit.className = option
+          ? `draft-unit${cursor ? " cursor" : ""}${selected ? " selected" : ""}${empty ? " empty" : ""}`
+          : "draft-text-whitespace";
+        unit.textContent = label;
+        if (option) {
+          unit.setAttribute("role", "option");
+          unit.setAttribute("aria-selected", String(selected || cursor));
+        } else {
+          unit.removeAttribute("role");
+          unit.removeAttribute("aria-selected");
+        }
+        if (scroll)
+          unit.scrollIntoView({ block: "nearest", inline: "nearest" });
+        return unit;
+      },
+    );
     element.units.append(...ordered);
     return element.section;
   }
@@ -206,27 +230,65 @@ export class DraftDestinationBody implements DestinationBody {
 function unitsFor(
   area: DraftArea,
   session: DraftSessionState,
-): readonly { id: string; label: string; cursor: boolean }[] {
+  textRevision: number,
+): readonly UnitDescriptor[] {
   if (area === "request")
     return session.requestIds.map((id, index) => ({
       id,
       label: `Pending request ${index + 1}`,
       cursor: id === session.record.cursors.requestId,
+      selected: false,
+      option: true,
+      empty: false,
+      scroll: id === session.record.cursors.requestId,
     }));
   if (area === "images")
     return session.record.images.map((image, index) => ({
       id: image.id,
       label: `Image ${index + 1} · ${image.mimeType}`,
       cursor: image.id === session.record.cursors.imageId,
+      selected: false,
+      option: true,
+      empty: false,
+      scroll: image.id === session.record.cursors.imageId,
     }));
-  return [
+  const focus = unitAtOffset(
+    session.record.text,
+    session.transient.textSelection?.focusOffset ??
+      session.record.cursors.textOffset,
+  ).start;
+  return projectTextSegments(
     {
-      id: "text",
-      label: session.record.text || "Empty Draft",
-      cursor: true,
+      text: session.record.text,
+      cursorOffset: session.record.cursors.textOffset,
+      selection: session.transient.textSelection,
+      copyBuffer: session.transient.textCopyBuffer,
+      handledInteractionIds: session.handledInteractionIds,
     },
-  ];
+    textRevision,
+  ).map((segment) => ({
+    id: segment.key,
+    label: segment.text,
+    cursor: segment.cursor,
+    selected: segment.selected,
+    option: segment.kind !== "whitespace",
+    empty: segment.start === segment.end,
+    scroll:
+      segment.kind !== "whitespace" &&
+      segment.start === focus &&
+      (segment.cursor || segment.selected),
+  }));
 }
+
+type UnitDescriptor = Readonly<{
+  id: string;
+  label: string;
+  cursor: boolean;
+  selected: boolean;
+  option: boolean;
+  empty: boolean;
+  scroll: boolean;
+}>;
 
 function areaLabel(area: DraftArea): string {
   return area[0]!.toUpperCase() + area.slice(1);

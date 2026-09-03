@@ -13,6 +13,7 @@ await build({
     "web/src/config/ui-acceptance-entry.ts",
     "web/src/config/hosts/ui-acceptance-entry.ts",
     "web/src/draft/ui-acceptance-entry.ts",
+    "web/src/draft/text/ui-acceptance-entry.ts",
   ],
   bundle: true,
   conditions: ["node"],

@@ -68,7 +68,8 @@ export function reduceTextEditor(
     );
     return changed(state, { ...state, ...edit, selection: null }, true);
   }
-  if (!isTextInput(action)) return { state, handled: false, persist: false };
+  if (!isTextEditorInput(action))
+    return { state, handled: false, persist: false };
   if (state.handledInteractionIds.includes(action.interactionId))
     return { state, handled: true, persist: false };
 
@@ -81,7 +82,7 @@ export function reduceTextEditor(
   return changed(state, remember(next, action.interactionId), true);
 }
 
-function isTextInput(
+export function isTextEditorInput(
   action: SemanticInput,
 ): action is SemanticInput &
   (

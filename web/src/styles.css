@@ -102,6 +102,13 @@ body,
   gap: 4px;
 }
 
+.draft-units.text {
+  display: block;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .draft-unit {
   min-width: 0;
   padding: 5px 7px;
@@ -115,6 +122,29 @@ body,
 .draft-unit.cursor {
   outline: 1px solid #8ed6ff;
   color: #fff;
+}
+
+.draft-units.text .draft-unit {
+  display: inline;
+  padding: 1px 2px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.draft-unit.selected {
+  background: #8ed6ff66;
+  color: #fff;
+}
+
+.draft-unit.empty {
+  display: inline-block;
+  min-width: 1ch;
+  min-height: 24px;
+}
+
+.draft-unit.empty::before {
+  color: #7f8b93;
+  content: "Empty Draft";
 }
 
 .draft-status {

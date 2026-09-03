@@ -146,6 +146,7 @@ window.__glasseoDraftUiAcceptance = {
       transientReset:
         snapshot.session?.transient.mode === "edit" &&
         snapshot.session.transient.textSelection === null &&
+        snapshot.session.transient.textCopyBuffer === "" &&
         snapshot.session.transient.selectedImageIds.length === 0 &&
         snapshot.session.transient.provisionalText === null &&
         !snapshot.session.transient.wheelOpen &&
