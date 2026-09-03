@@ -1,6 +1,7 @@
 package com.code2hack.glasseo
 
 import android.content.Intent
+import android.os.SystemClock
 import android.view.InputDevice
 import android.view.View
 import android.view.ViewGroup
@@ -155,6 +156,9 @@ class DraftTextPhysicalInstrumentationTest {
                 activity.evaluateJavascriptForTest(BEGIN_SCRIPT)
             }
             assertEquals("ready", awaitDomValue(scenario, "document.body.dataset.draftTextPhysical || ''", 20_000))
+            if (InstrumentationRegistry.getArguments().getString("replay") == "true") {
+                scenario.onActivity(::replayPhysicalSequence)
+            }
             assertEquals(
                 "8",
                 awaitDomValue(
@@ -224,6 +228,34 @@ class DraftTextPhysicalInstrumentationTest {
             hidden = activityRoot.getChildAt(0).visibility != View.VISIBLE
         }
         return hidden
+    }
+
+    private fun replayPhysicalSequence(activity: MainActivity) {
+        var time = SystemClock.elapsedRealtime()
+        fun send(control: SemanticControl, code: Int, action: PhysicalAction, advance: Long) {
+            activity.submitPhysicalInputForTest(
+                PhysicalInput(PhysicalOwner(PhysicalSource.HID, 5, code), control, action, time),
+            )
+            time += advance
+        }
+        fun tap(control: SemanticControl, code: Int) {
+            send(control, code, PhysicalAction.DOWN, 80)
+            send(control, code, PhysicalAction.UP, 120)
+        }
+        fun hold(control: SemanticControl, code: Int) {
+            send(control, code, PhysicalAction.DOWN, 700)
+            send(control, code, PhysicalAction.UP, 120)
+        }
+        tap(SemanticControl.UP, 99)
+        tap(SemanticControl.DOWN, 96)
+        tap(SemanticControl.PRIMARY, 103)
+        tap(SemanticControl.DOWN, 96)
+        tap(SemanticControl.PRIMARY, 103)
+        tap(SemanticControl.PRIMARY, 103)
+        hold(SemanticControl.SECONDARY, 105)
+        hold(SemanticControl.SECONDARY, 105)
+        tap(SemanticControl.SECONDARY, 105)
+        tap(SemanticControl.SECONDARY, 105)
     }
 
     companion object {
