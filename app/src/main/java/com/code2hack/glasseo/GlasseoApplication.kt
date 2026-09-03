@@ -13,6 +13,10 @@ class GlasseoApplication : Application() {
         private set
     val hidBindings = HidBindingMap()
     val hidInputTrace = HidInputTraceRecorder()
+    lateinit var hidBindingStore: HidBindingStore
+        private set
+    lateinit var hidBindingCapture: HidBindingCapture
+        private set
     var qualificationSession: QualificationSession? = null
         private set
     var hidQualificationFlow: HidQualificationFlow? = null
@@ -20,6 +24,11 @@ class GlasseoApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        val persistence = SharedPreferencesHidBindingPersistence(
+            getSharedPreferences(HID_BINDING_PREFS, MODE_PRIVATE),
+        )
+        hidBindingStore = HidBindingStore(persistence.read(), persistence, System::currentTimeMillis)
+        hidBindingCapture = HidBindingCapture(hidBindingStore)
         orderedInterception = PersistentOrderedBroadcastInterception(
             this,
             ORDERED_CONTROL_ACTIONS,
@@ -92,6 +101,7 @@ class GlasseoApplication : Application() {
     }
 
     companion object {
+        private const val HID_BINDING_PREFS = "hid-bindings"
         val ORDERED_CONTROL_ACTIONS = setOf(
             "com.android.action.ACTION_AI_START",
             "com.android.action.ACTION_SPRITE_BUTTON_UP",

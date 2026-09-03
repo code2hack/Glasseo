@@ -23,6 +23,9 @@ import {
   emptyHostCleanupParticipant,
   HostCleanupCoordinator,
 } from "../config/hosts/cleanup";
+import { WebViewHidBindingPort } from "../config/hid/bridge";
+import { HidConfigController } from "../config/hid/controller";
+import { HidConfigSection } from "../config/hid/section";
 import { DraftController } from "../draft/controller";
 import { bindDraftLifecycle } from "../draft/lifecycle";
 import { IndexedDbDraftStorage } from "../draft/storage";
@@ -99,12 +102,14 @@ export async function bootstrap(): Promise<void> {
       emptyHostCleanupParticipant("request-answers"),
     ]),
   );
+  const hid = new HidConfigController(new WebViewHidBindingPort());
+  const hidSection = new HidConfigSection(hid);
   const config = new ConfigController(
     directory,
     new IndexedDbConfigStorage(),
     (key) => pager.openAgent(key),
     Date.now,
-    [hosts],
+    [hosts, hidSection],
   );
   const view = new AgentShellView(root, pager, directory, metadata, timeline, {
     config: () => new ConfigDestinationBody(config, () => view.render()),
@@ -149,6 +154,7 @@ export async function bootstrap(): Promise<void> {
   );
   postNative({ type: "hello" });
   void config.restore();
+  hid.restore();
   void directory.restore();
   const result = await runWebViewProbe();
   postNative({ type: "probe-result", ...result });
